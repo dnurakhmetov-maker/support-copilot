@@ -70,6 +70,18 @@ except Exception:  # TEMP fallback until Backend's guards.py lands
     def _guards_check(req: TriageRequest, category: str) -> list[str]:
         text = " ".join(m.text for m in req.messages if m.role == "player")
         return [f"обязательно человеку: {name}" for name, rx in _G.items() if rx.search(text)]
+try:  # pragma: no cover
+    from service.app.dedup import check as _dedup_check  # type: ignore
+except Exception:  # Backend's dedup.py not merged yet: no deterministic dedup (LLM flag only)
+    def _dedup_check(req: TriageRequest) -> str | None:
+        return None
+
+DUPLICATE_REPLY = {
+    "ru": "Приветствую, это обращение повторяет ваше предыдущее, оно уже на рассмотрении. Ожидайте ответа.",
+    "kk": "Сәлеметсіз бе, бұл өтініш алдыңғы өтінішіңізді қайталайды, ол қаралуда. Жауабын күтіңіз.",
+    "uz": "Assalomu alaykum, bu murojaat avvalgi murojaatingizni takrorlaydi, u ko'rib chiqilmoqda. Iltimos, kuting.",
+    "en": "Hello, this repeats your previous request, which is already being handled. Please wait for a reply.",
+}
 # ---------------------------------------------------------------------------------------------------------
 
 
@@ -280,6 +292,17 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     if draft is None:
         needs_human = True
 
+    dup_of = None
+    try:
+        dup_of = _dedup_check(req)
+    except Exception:
+        dup_of = None
+    if dup_of:
+        reasons.append(f"дубль: повтор обращения {dup_of} в течение часа")
+        if category not in HANDOFF_CATEGORIES:  # duplicates get a fixed reply; mandatory-human topics keep their flag
+            draft = DraftReply(lang=out_lang, text=DUPLICATE_REPLY.get(out_lang, DUPLICATE_REPLY["ru"]), cited=[])
+            needs_human = bool(forced and any("обязательно" in f or "всегда" in f for f in forced))
+
     try:
         conf = max(0.0, min(1.0, float(out.get("confidence", 0.5))))
     except (TypeError, ValueError):
@@ -287,7 +310,7 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
 
     resp = TriageResponse(
         lang=out_lang, category=category, priority=priority,
-        is_spam_or_duplicate=bool(out.get("is_spam_or_duplicate", False)),
+        is_spam_or_duplicate=bool(dup_of) or bool(out.get("is_spam_or_duplicate", False)),
         extracted=Extracted(nickname=ex.get("nickname") or nickname, rule_refs=player_refs,
                             has_evidence=bool(ex.get("has_evidence", has_evidence)), server=ex.get("server")),
         draft_reply=draft, needs_human=needs_human, confidence=conf, reasons=list(dict.fromkeys(reasons)))

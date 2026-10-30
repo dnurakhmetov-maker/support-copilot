@@ -50,6 +50,7 @@ Guarantees:
 | GET | `/tickets/{id}` | Full ticket: messages + triage result + history |
 | POST | `/tickets/{id}/action` | `{"action":"send"|"edit"|"escalate","final_text":"...","comment":"..."}` |
 | GET | `/stats` | Counts by category/priority/status, share of `needs_human`, avg latency |
+| GET | `/templates` | **Bonus (after core tasks):** proposed reply templates from ticket clusters — serves `data/templates/proposals.json` built by `python -m service.app.templates_mining` |
 | GET | `/rules/{id}` | Rule text for a canonical citation id (e.g. `2.1`, `GZ 1.2`, URL-encode the space) — for hover tooltips |
 
 `Ticket` object:

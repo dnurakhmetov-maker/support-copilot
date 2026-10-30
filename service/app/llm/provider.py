@@ -12,6 +12,7 @@ Only stdlib HTTP — no SDK dependency.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import time
@@ -63,7 +64,20 @@ PRICES_PER_M = {
 }
 
 
+_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="llm")
+
+
 def _post(url: str, body: dict, headers: dict, timeout: float) -> dict:
+    """Hard wall-clock deadline: urllib's timeout is per socket operation, so a slow trickling response can
+    exceed it many times over. The call runs in a worker thread and we stop waiting at the deadline."""
+    fut = _POOL.submit(_post_blocking, url, body, headers, timeout)
+    try:
+        return fut.result(timeout=timeout)
+    except concurrent.futures.TimeoutError as e:
+        raise LLMError(f"TimeoutError: no complete response within {timeout:.1f}s") from e
+
+
+def _post_blocking(url: str, body: dict, headers: dict, timeout: float) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
                                  headers={"Content-Type": "application/json", **headers}, method="POST")
     try:
