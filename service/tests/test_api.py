@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from contract.schemas import DraftReply, Extracted, TriageResponse
-from service.app import main, pipeline
+from service.app import classify, main, pipeline
 from service.app.llm import prompt
 from service.app.rag import cases_index, rules_index
 
@@ -34,6 +34,7 @@ FAKE_TAXONOMY = {
     "categories": [
         {"code": "complaint.insult", "kind": "complaint", "title": "invented insult", "rules": ["9.1"]},
         {"code": "complaint.other", "kind": "complaint", "title": "invented other"},
+        {"code": "complaint.cheat", "kind": "complaint", "title": "invented spam", "rules": ["9.2"]},
         {"code": "complaint.invalid", "kind": "complaint", "title": "invented invalid", "rules": ["8.1.1 ЖБ"]},
         {"code": "report.question", "kind": "report", "title": "invented question"},
         {"code": "report.payment", "kind": "report", "title": "invented payment"},
@@ -45,11 +46,13 @@ FAKE_TRAIN = [
     ("c1", "complaint", "игрок обзывал меня в чате на спавне", "Здравствуйте! Нарушение 9.1 ОП подтверждено."),
     ("c2", "complaint", "игрок оскорблял в чате у банка", "Здравствуйте! Жалоба рассмотрена, пункт 9.1 ОП."),
     ("c3", "complaint", "игрок спамил в чате весь вечер", "Здравствуйте! Нарушение пункта 9.2 ОП."),
+    ("c5", "complaint", "игрок спамил в чате рекламой", "Здравствуйте! Нарушение пункта 9.2 ОП."),
     ("c4", "complaint", "нет доказательств, просто наказать игрока", "Здравствуйте! Нужны доказательства, 8.1.1 ЖБ."),
     ("r1", "report", "как поменять цвет машины в гараже", "Здравствуйте! Цвет меняется в меню гаража."),
     ("r2", "report", "как поменять номер машины в гараже", "Здравствуйте! Номер меняется в меню гаража."),
     ("r3", "report", "где найти меню гаража для машины", "Здравствуйте! Меню открывается клавишей в гараже."),
 ]
+FAKE_VIOLATION = {"c1": "9.1 ОП", "c2": "9.1 ОП", "c3": "9.2 ОП", "c5": "9.2 ОП"}
 
 
 def _response(**kw) -> TriageResponse:
@@ -68,7 +71,17 @@ def client(monkeypatch):
         yield c
 
 
+def _point_data_dir(monkeypatch, path):
+    """Redirect every module that reads DATA_DIR at import time: tests never touch the real data/."""
+    monkeypatch.setenv("DATA_DIR", str(path))
+    monkeypatch.setattr(cases_index, "DATA_DIR", str(path))
+    monkeypatch.setattr(cases_index, "INDEX_DIR", str(path / "index"))
+    monkeypatch.setattr(classify, "DATA", path)
+    monkeypatch.setattr(classify, "CACHE", path / "index" / "complaint_clf.pkl")
+
+
 def _clear_caches():
+    classify.load_classifier.cache_clear()
     cases_index.load_cases.cache_clear()
     rules_index.load_rules.cache_clear()
     prompt.load_taxonomy.cache_clear()
@@ -81,11 +94,11 @@ def fake_data(tmp_path, monkeypatch):
     (tmp_path / "taxonomy.json").write_text(json.dumps(FAKE_TAXONOMY, ensure_ascii=False), encoding="utf-8")
     with gzip.open(tmp_path / "tickets_train.jsonl.gz", "wt", encoding="utf-8") as f:
         for tid, kind, player, admin in FAKE_TRAIN:
-            f.write(json.dumps({"ticket_id": tid, "kind": kind, "lang": "ru", "messages": [
+            # invented admin outcome, so the local classifier trains on silver labels like on real data
+            silver = {"verdict": "approved", "violation": FAKE_VIOLATION[tid]} if tid in FAKE_VIOLATION else {}
+            f.write(json.dumps({"ticket_id": tid, "kind": kind, "lang": "ru", **silver, "messages": [
                 {"role": "player", "text": player}, {"role": "admin", "text": admin}]}, ensure_ascii=False) + "\n")
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(cases_index, "DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(cases_index, "INDEX_DIR", str(tmp_path / "index"))
+    _point_data_dir(monkeypatch, tmp_path)
     monkeypatch.delenv("SKIP_WARMUP", raising=False)
     _clear_caches()
     yield tmp_path
@@ -168,15 +181,18 @@ def test_cors_rejects_other_origin(client):
 
 
 def test_warmup_without_data_does_not_crash(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATA_DIR", str(tmp_path / "missing"))
-    monkeypatch.setattr(cases_index, "DATA_DIR", str(tmp_path / "missing"))
-    monkeypatch.setattr(cases_index, "INDEX_DIR", str(tmp_path / "missing" / "index"))
+    _point_data_dir(monkeypatch, tmp_path / "missing")
     monkeypatch.delenv("SKIP_WARMUP", raising=False)
     _clear_caches()
     try:
         with TestClient(main.app) as c:
             h = c.get("/health").json()
             assert h["status"] == "ok" and h["warm"] is False and h["warmup_error"]
+            # every component is tried and reported, one failure doesn't hide the others
+            assert {k: v["ok"] for k, v in h["components"].items()} == {"rules": False, "cases": False,
+                                                                        "classifier": False}
+            assert "classifier: " in h["warmup_error"]
+            assert not (tmp_path / "missing" / "index" / "complaint_clf.pkl").exists()
             r = c.post("/triage", json=COMPLAINT)  # data missing -> pipeline raises -> degraded answer, not 500
             assert r.status_code == 200 and r.json()["needs_human"] is True
     finally:
@@ -190,6 +206,9 @@ def test_e2e_llm_disabled_needs_human(fake_data, monkeypatch):
         h = c.get("/health").json()
         assert h["warm"] is True, h
         assert (fake_data / "index" / "cases.pkl").exists()  # warm-up built the index on startup
+        assert (fake_data / "index" / "complaint_clf.pkl").exists()  # ... and trained + cached the classifier
+        assert all(v["ok"] for v in h["components"].values()) and set(h["components"]) == {"rules", "cases",
+                                                                                           "classifier"}
         for payload in (COMPLAINT, REPORT):
             r = c.post("/triage", json=payload)
             assert r.status_code == 200

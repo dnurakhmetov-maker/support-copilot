@@ -11,18 +11,21 @@ GET  /tickets/{id}           Ticket with history
 POST /tickets/{id}/action    send | edit | escalate, appended to history
 GET  /stats                  counts, needs_human share, avg latency
 GET  /rules/{id}             rule text for a canonical citation id (tooltips)
+GET  /templates             proposed reply templates (data/templates/proposals.json), 404 if not built
 
 /triage never returns 500 because of the pipeline: any exception degrades to a schema-valid
 "needs human" answer (draft_reply=null, needs_human=true) with the reason in `reasons`.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -40,26 +43,38 @@ CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3
 log = logging.getLogger("support_copilot")
 
 # Filled by the lifespan warm-up; exposed in /health so a cold or data-less service is visible.
-STATE: dict = {"warm": False, "warmup_s": None, "warmup_error": None}
+STATE: dict = {"warm": False, "warmup_s": None, "warmup_error": None, "components": {}}
 
 
-def warmup() -> None:
-    """Build/load the cases and rules indexes once, so the first /triage doesn't wait ~10 s.
-
-    Missing data must not stop the service from starting: /triage then degrades to "needs human".
-    """
+def _warm_components() -> list[tuple[str, object]]:
+    from service.app.classify import load_classifier
     from service.app.rag.cases_index import load_cases
     from service.app.rag.rules_index import load_rules
 
+    return [("rules", load_rules), ("cases", load_cases), ("classifier", load_classifier)]
+
+
+def warmup() -> None:
+    """Load (or build and cache in data/index/) the rules, cases index and local classifier once, so the first
+    /triage doesn't wait ~10-20 s. Each component is warmed independently: one failure doesn't skip the others.
+
+    Missing data must not stop the service from starting: /triage then degrades to "needs human".
+    """
     t0 = time.time()
-    try:
-        load_rules()
-        load_cases()
-        STATE.update(warm=True, warmup_error=None)
-    except Exception as e:  # missing data/, broken index cache, ...
-        STATE.update(warm=False, warmup_error=f"{type(e).__name__}: {e}"[:300])
-        log.warning("warm-up failed, /triage will degrade to needs_human: %s", STATE["warmup_error"])
-    STATE["warmup_s"] = round(time.time() - t0, 3)
+    components, errors = {}, []
+    for name, load in _warm_components():
+        t1 = time.time()
+        try:
+            load()
+            components[name] = {"ok": True, "s": round(time.time() - t1, 3)}
+        except Exception as e:  # missing data/, broken cache, ...
+            err = f"{type(e).__name__}: {e}"[:300]
+            components[name] = {"ok": False, "s": round(time.time() - t1, 3), "error": err}
+            errors.append(f"{name}: {err}")
+    STATE.update(warm=not errors, warmup_error="; ".join(errors)[:600] or None, components=components,
+                 warmup_s=round(time.time() - t0, 3))
+    if errors:
+        log.warning("warm-up incomplete, affected steps degrade: %s", STATE["warmup_error"])
 
 
 @asynccontextmanager
@@ -97,7 +112,8 @@ async def _http_error(_: Request, exc: StarletteHTTPException):
 # ---------- endpoints ----------
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": VERSION, "warm": STATE["warm"], "warmup_error": STATE["warmup_error"]}
+    return {"status": "ok", "version": VERSION, "warm": STATE["warm"], "warmup_error": STATE["warmup_error"],
+            "warmup_s": STATE["warmup_s"], "components": STATE["components"]}
 
 
 def _degraded(req: TriageRequest, reason: str) -> TriageResponse:
@@ -197,3 +213,21 @@ def get_rule(rule_id: str) -> dict:
     if point is None:
         raise HTTPException(status_code=404, detail=f"rule {rule_id!r} not found")
     return {"id": point.cid, "section": point.section_title, "text": point.text}
+
+
+def templates_path() -> Path:
+    return Path(os.getenv("DATA_DIR", "data")) / "templates" / "proposals.json"
+
+
+@app.get("/templates")
+def templates():
+    """Reply-template proposals mined from past tickets (built locally, never committed)."""
+    path = templates_path()
+    if not path.exists():
+        raise HTTPException(status_code=404,
+                            detail="templates are not built yet: run `python -m service.app.templates_mining`")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=f"templates file is unreadable ({type(e).__name__}): "
+                                                    "rebuild with `python -m service.app.templates_mining`") from e
