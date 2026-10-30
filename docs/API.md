@@ -71,9 +71,16 @@ Guarantees:
 | 400 | Malformed JSON | `{"error":"bad_request","detail":"..."}` |
 | 404 | Unknown ticket id | `{"error":"not_found","detail":"..."}` |
 | 422 | Valid JSON, schema mismatch | FastAPI validation body |
-| 503 | LLM unavailable → service still answers `/triage` with `draft_reply=null`, `needs_human=true`, reason `llm_unavailable` | — |
 
-`/triage` must never fail because of the LLM: it degrades to "needs human".
+`/triage` never fails because of the LLM or the pipeline: it returns **200** with a schema-valid answer,
+`draft_reply=null`, `needs_human=true` and the reason in `reasons` (e.g. «LLM недоступен — требуется администратор»).
+There is no 503.
+
+## Duplicates
+
+`is_spam_or_duplicate=true` is also set by a deterministic dedup step: same `reporter_hash`, similar text, within
+60 minutes of a previous ticket (by `created_at`, or arrival time if absent). Implemented in `service/app/dedup.py`
+(Backend), called from the pipeline, so both the API and `make predict` get it.
 
 ## Batch
 
