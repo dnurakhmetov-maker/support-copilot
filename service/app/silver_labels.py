@@ -99,6 +99,12 @@ def score(run_path: str) -> None:
             if pred != gold[tid]:
                 conf[(gold[tid], pred)] += 1
     print(f"category accuracy vs silver: {hit}/{n} = {hit / max(n, 1):.0%}")
+    rows = [json.loads(l) for l in open(run_path, encoding="utf-8")]
+    llm = [(r["meta"].get("llm_category"), gold[r["ticket_id"]]) for r in rows
+           if r.get("ticket_id") in gold and (r.get("meta") or {}).get("llm_category")]
+    if llm:
+        print(f"  LLM alone (where it answered): {sum(a == b for a, b in llm)}/{len(llm)} = "
+              f"{sum(a == b for a, b in llm) / len(llm):.0%}")
     for (g, p), k in conf.most_common(8):
         print(f"  silver {g:<18} predicted {p:<18} x{k}")
 
