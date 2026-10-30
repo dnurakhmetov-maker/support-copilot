@@ -28,14 +28,17 @@ def main() -> None:
     ap.add_argument("--langs", default="", help="only these data langs, e.g. kk,uz,lat")
     a = ap.parse_args()
 
-    rows = [json.loads(l) for l in open(a.file, encoding="utf-8")]
+    if a.file.endswith(".json"):
+        rows = json.load(open(a.file, encoding="utf-8"))
+    else:
+        rows = [json.loads(l) for l in open(a.file, encoding="utf-8")]
     random.Random(a.seed).shuffle(rows)
     if a.langs:
         keep = set(a.langs.split(","))
         rows = [r for r in rows if r.get("lang") in keep]
     non_ru = [r for r in rows if r.get("lang") not in ("ru",)]
     ru = [r for r in rows if r.get("lang") == "ru"]
-    sample = (non_ru[: a.n // 2] + ru)[: a.n]
+    sample = (non_ru[: a.n // 2] + ru)[: a.n] if not a.file.endswith(".json") else rows[: a.n]
 
     out_dir = Path(os.getenv("DATA_DIR", "data")) / "runs"
     out_dir.mkdir(parents=True, exist_ok=True)

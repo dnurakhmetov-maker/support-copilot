@@ -30,7 +30,13 @@ except Exception:  # TEMP fallback until Backend's normalize.py lands
     _UZ_LAT = re.compile(r"\b(\w+o['ʻ‘’]\w*|\w*g['ʻ‘’]\w+|qanday|nega|men|menga|siz|iltimos|yordam|qil\w*|bo['ʻ‘’]?l\w*|kerak|rahmat|salom|akkaunt\w*)\b", re.I)
     _EN = re.compile(r"\b(the|is|are|please|help|my|i|you|how|what|account|stuck|player)\b", re.I)
 
+    _LOOKALIKE = str.maketrans({"ќ": "қ", "Ќ": "Қ", "ґ": "ғ", "Ґ": "Ғ", "ѕ": "ң", "Ѕ": "Ң", "є": "ә", "Є": "Ә",
+                                "ј": "ө", "Ј": "Ө", "ў": "ұ", "Ў": "Ұ", "ї": "ү", "Ї": "Ү"})
+
     def _normalize(text: str, region: str | None = None, server_lang: str | None = None) -> str:
+        # cp1251 look-alikes only on Kazakh servers — elsewhere є/ї are real Ukrainian letters (see docs/EDA.md)
+        if region == "kz" or server_lang == "kk":
+            return text.translate(_LOOKALIKE)
         return text
 
     def _detect_lang(text: str) -> str:
@@ -215,7 +221,8 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     player_refs = [cid for cid in (rules_idx.resolve(str(r)) for r in ex.get("rule_refs") or []) if cid]
 
     draft = None
-    reasons = [str(r) for r in (out.get("reasons") or [])][:5]
+    # reasons are shown to Russian-speaking admins: keep Cyrillic ones only
+    reasons = [str(r) for r in (out.get("reasons") or []) if re.search(r"[А-Яа-яЁё]", str(r))][:5]
     needs_human = bool(out.get("needs_human", True))
     draft_text = (out.get("draft_text") or "").strip()
     if draft_text:
