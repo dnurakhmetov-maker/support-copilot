@@ -50,6 +50,7 @@ Guarantees:
 | GET | `/tickets/{id}` | Full ticket: messages + triage result + history |
 | POST | `/tickets/{id}/action` | `{"action":"send"|"edit"|"escalate","final_text":"...","comment":"..."}` |
 | GET | `/stats` | Counts by category/priority/status, share of `needs_human`, avg latency |
+| GET | `/rules/{id}` | Rule text for a canonical citation id (e.g. `2.1`, `GZ 1.2`, URL-encode the space) — for hover tooltips |
 
 `Ticket` object:
 ```json
@@ -63,6 +64,21 @@ Guarantees:
 }
 ```
 `status`: `new` | `sent` | `escalated`.
+
+`GET /queue` returns a **plain JSON array** `Ticket[]` (no wrapper), sorted p0→p3, then oldest first.
+
+`GET /stats`:
+```json
+{"total": 120, "by_category": {"complaint.insult": 40}, "by_priority": {"p0": 2, "p1": 10, "p2": 60, "p3": 48},
+ "by_status": {"new": 90, "sent": 25, "escalated": 5}, "needs_human_share": 0.58, "avg_latency_ms": 2100}
+```
+
+`GET /rules/{id}` → `{"id": "2.1", "section": "<section title>", "text": "<rule text>"}`; 404 if the id does not exist.
+Served from `data/rules.json` at runtime via `service.app.rag.rules_index.load_rules()` — rule texts are never copied
+into the repo or the UI code.
+
+Category codes (`complaint.insult`, `report.help`, …) are identifiers and may be used in UI code/mocks; human-readable
+labels in the UI are our own wording.
 
 ## Errors
 
