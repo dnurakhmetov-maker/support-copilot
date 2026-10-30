@@ -1,0 +1,32 @@
+# Service + admin UI. Owner: Infra / QA.   make up  ==  docker compose up --build
+# Case data is mounted from ./data (never baked into an image); secrets come from .env.
+services:
+  service:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data  # read-write: the cases index is cached to data/index on first start
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  admin-ui:
+    # Enabled by `make up` once admin-ui/Dockerfile exists (Frontend); manual: docker compose --profile ui up --build
+    profiles: ["ui"]
+    build: ./admin-ui
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      service:
+        condition: service_healthy
