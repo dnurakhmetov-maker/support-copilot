@@ -1,5 +1,11 @@
 # Team plan
 
+## Start here
+
+Each participant: clone the repo, put case data into `data/` (never commit it), open Claude Code in the repo root
+and paste your starter prompt from `docs/prompts/` (`backend.md`, `frontend.md`, `infra-qa.md`).
+Repo-wide rules for every AI assistant are in `CLAUDE.md`.
+
 ## Principle
 
 Walking skeleton first: by **H+6** the full chain works end to end on stubs
