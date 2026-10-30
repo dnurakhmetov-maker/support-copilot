@@ -177,6 +177,9 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     raw_text = _player_text(req)
     text = _normalize(raw_text, req.region, req.server_lang) if raw_text else raw_text
     lang = _detect_lang(text) if text else "und"
+    if lang == "ru" and (req.region == "kz" or req.server_lang == "kk") and re.search(r"[әғқңөұүһі]", text.lower()) \
+            and not re.search(r"[їєґ]", raw_text.lower()):
+        lang = "kk"  # on Kazakh servers one Kazakh-only letter is enough
     has_evidence = bool(re.search(r"<url>|https?://|youtu|vk\.com|disk\.|imgur|rutube", text, re.I))
     nickname = req.reported_nick
 
