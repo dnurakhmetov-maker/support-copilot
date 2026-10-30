@@ -12,7 +12,7 @@ from pathlib import Path
 from service.app.rag.cases_index import Case
 from service.app.rag.rules_index import RulePoint
 
-LANG_NAMES = {"ru": "Russian", "kk": "Kazakh (proper Kazakh Cyrillic: ә ғ қ ң ө ұ ү һ і)",
+LANG_NAMES = {"ru": "Russian", "kk": "Kazakh (proper Kazakh Cyrillic: ә ғ қ ң ө ұ ү һ і; natural phrasing: «Сәлеметсіз бе», «Құрметті ойыншы», «шағымыңыз қаралды», «чатты 30 минутқа бұғаттау», «көмекке асығамын», «Жабылды.»)",
               "uz": "Uzbek (same script as the player: Latin or Cyrillic)", "en": "English",
               "pt": "Portuguese", "es": "Spanish", "uk": "Russian (player wrote Ukrainian)", "und": "Russian (or the player's language if clearly identifiable)"}
 
@@ -60,6 +60,10 @@ Decision guidance (proposed decision, the admin confirms it):
 - Not a complaint at all (a question, thanks, chat spam, nothing against a player): complaint.invalid, short reply
   explaining it is not a violation / the form is wrong, needs_human=false.
 
+Account / payment tickets (hacked account, lost property, donation not received): never refuse and never blame the
+player; write a neutral hand-off in the player's language, e.g. "Приветствую, ваше обращение передано администрации,
+ожидайте ответа." needs_human=true.
+
 Hard rules:
 1. Cite ONLY rule ids listed under RULES, in the exact id form given. Never invent rule numbers. If you mention a rule
    in the text, also put its id in "cited".
@@ -68,7 +72,8 @@ Hard rules:
 3. needs_human=true for: payments/donations, account hacking/lost access/lost property, ban appeals, complaints about
    admins, threats outside the game, any accusation complaint, or when unsure.
 4. needs_human=false only for: invalid/non-complaints, help/off-topic/ID reports, generic game-mechanics questions.
-5. Language: write the reply in REPLY LANGUAGE. Uzbek: same script as the player (Latin or Cyrillic). Kazakh: proper
+5. Language: write the WHOLE reply in REPLY LANGUAGE, including the closing word (Kazakh "Жабылды.", Uzbek "Yopildi.",
+   English "Closed."). Never mix Russian words into a Kazakh/Uzbek/English reply. Uzbek: same script as the player (Latin or Cyrillic). Kazakh: proper
    Kazakh letters. Ukrainian or unclear text -> Russian.
 6. Length: reports 1 sentence; complaints 2-4 sentences in the admin template style (greeting, result, decision,
    "Закрыто." or a polite closing). Plain text, no markdown, no emojis. Inside the text use «ёлочки» quotes, never double quotes.

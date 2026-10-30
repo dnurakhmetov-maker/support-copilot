@@ -125,6 +125,8 @@ def _parse_llm_json(text: str) -> dict:
         return json.loads(_BAD_ESCAPE.sub(r"\\\\", t), strict=False)
 
 
+_CLOSING = {"kk": "Жабылды.", "uz": "Yopildi.", "en": "Closed."}
+
 # Complaint categories that are real accusations: the decision depends on evidence only admins see.
 AUTO_OK_COMPLAINT = {"complaint.invalid"}
 # Priority ceilings from taxonomy criteria (the LLM over-escalates); p0 is reserved for these categories.
@@ -230,6 +232,8 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     reasons = [str(r) for r in (out.get("reasons") or []) if re.search(r"[А-Яа-яЁё]", str(r))][:5]
     needs_human = bool(out.get("needs_human", True))
     draft_text = (out.get("draft_text") or "").strip()
+    if draft_text and out_lang in _CLOSING:  # deterministic: no Russian closing word inside kk/uz/en replies
+        draft_text = re.sub(r"\b(Закрыто|Жалоба закрыта)[.!]?", _CLOSING[out_lang], draft_text)
     if draft_text:
         v = validate_draft(draft_text, [str(c) for c in out.get("cited") or []], rules_idx)
         meta.dropped_citations, meta.invalid_mentions = v.dropped_citations, v.invalid_mentions
