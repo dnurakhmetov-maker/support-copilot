@@ -25,17 +25,22 @@ def main() -> None:
     ap.add_argument("--file", default=os.path.join(os.getenv("DATA_DIR", "data"), "tickets_valid.jsonl"))
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--sleep", type=float, default=0.0, help="pause between calls (free-tier rate limits)")
+    ap.add_argument("--langs", default="", help="only these data langs, e.g. kk,uz,lat")
     a = ap.parse_args()
 
     rows = [json.loads(l) for l in open(a.file, encoding="utf-8")]
     random.Random(a.seed).shuffle(rows)
+    if a.langs:
+        keep = set(a.langs.split(","))
+        rows = [r for r in rows if r.get("lang") in keep]
     non_ru = [r for r in rows if r.get("lang") not in ("ru",)]
     ru = [r for r in rows if r.get("lang") == "ru"]
     sample = (non_ru[: a.n // 2] + ru)[: a.n]
 
     out_dir = Path(os.getenv("DATA_DIR", "data")) / "runs"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"smoke_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
+    tag = (os.getenv("LLM_MODEL", "") + ("_" + a.langs.replace(",", "-") if a.langs else "")).replace("/", "-")
+    out_path = out_dir / f"smoke_{time.strftime('%Y%m%d_%H%M%S')}_{tag}.jsonl"
 
     lat, cost, tin, tout = [], [], [], []
     ok = nh = drafts = dropped = invalid = 0
