@@ -1,0 +1,29 @@
+# case data — NEVER commit
+data/
+*.jsonl
+*.jsonl.gz
+!contract/examples/*.jsonl
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# node
+node_modules/
+.next/
+out/
+
+# artifacts
+*.sqlite
+*.db
+models/
+indexes/
+.DS_Store
