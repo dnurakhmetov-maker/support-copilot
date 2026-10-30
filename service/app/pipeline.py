@@ -79,6 +79,29 @@ class TriageMeta:
     invalid_mentions: list[str] = field(default_factory=list)
 
 
+_BAD_ESCAPE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
+
+
+def _parse_llm_json(text: str) -> dict:
+    """LLM JSON is sometimes slightly broken (bad \\u escapes, code fences). Repair instead of failing the ticket."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.strip("`").split("\n", 1)[-1]
+    start, end = t.find("{"), t.rfind("}")
+    if start >= 0 and end > start:
+        t = t[start: end + 1]
+    try:
+        return json.loads(t, strict=False)
+    except json.JSONDecodeError:
+        return json.loads(_BAD_ESCAPE.sub(r"\\\\", t), strict=False)
+
+
+# Complaint categories that are real accusations: the decision depends on evidence only admins see.
+AUTO_OK_COMPLAINT = {"complaint.invalid"}
+# Priority ceilings from taxonomy criteria (the LLM over-escalates); p0 is reserved for these categories.
+P0_ALLOWED = {"report.account", "report.payment"}
+
+
 def _player_text(req: TriageRequest) -> str:
     return " ".join(m.text for m in req.messages if m.role == "player").strip()
 
@@ -130,7 +153,7 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     try:
         res = complete_json(SYSTEM, user)
         meta.llm_latency_s, meta.tokens_in, meta.tokens_out, meta.cost_usd = res.latency_s, res.tokens_in, res.tokens_out, res.cost_usd
-        out = json.loads(res.text)
+        out = _parse_llm_json(res.text)
         meta.llm_ok = True
     except (LLMError, json.JSONDecodeError, ValueError) as e:
         meta.error = str(e)[:300]
@@ -158,7 +181,12 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
             needs_human = True
             reasons += v.force_human_reasons
 
+    if priority == "p0" and category not in P0_ALLOWED and not re.search(r"(угрож|убью|найду тебя|swat|суицид)", text, re.I):
+        priority = "p1"
+
     forced = []
+    if req.kind == "complaint" and category not in AUTO_OK_COMPLAINT and not out.get("is_spam_or_duplicate"):
+        forced.append("решение по жалобе принимает администратор: доказательства (скриншоты/видео) проверяет человек")
     if category in set(load_taxonomy().get("needs_human_always", [])):
         forced.append(f"категория {category} всегда передаётся администратору")
     forced += _guards_check(req, category)
