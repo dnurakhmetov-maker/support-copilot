@@ -1,0 +1,10 @@
+data/
+.env
+.env.*
+.venv/
+.git/
+**/__pycache__/
+**/node_modules/
+**/.next/
+*.jsonl
+*.jsonl.gz
