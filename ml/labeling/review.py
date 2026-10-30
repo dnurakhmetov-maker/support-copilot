@@ -35,8 +35,8 @@ def wrap(s: str, indent: str = "    ") -> str:
 def show_help(cats: list[dict], tax: dict) -> None:
     for i, c in enumerate(cats, 1):
         print(f" {i:>2}. {c['code']:<20} {c.get('title', '')}")
-        if c.get("description"):
-            print(wrap(str(c["description"]), "       "))
+        if c.get("examples"):
+            print(wrap("e.g. " + "; ".join(map(str, c["examples"][:3])), "       "))
     print()
     for p in tax["priorities"]:
         print(f"  {p['code']}  {p.get('title', '')}: {p.get('rule', '')}")
