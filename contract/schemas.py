@@ -34,6 +34,7 @@ class TriageRequest(BaseModel):
     reporter_hash: Optional[str] = None
     reported_nick: Optional[str] = None
     rule_refs_raw: Optional[str] = None
+    images_count: Optional[int] = None  # screenshots attached in the launcher form (admins see them, we don't)
     created_at: Optional[str] = None
     server_lang: Optional[str] = None
     region: Optional[str] = None

@@ -17,6 +17,8 @@ Request:
 }
 ```
 `kind`: `complaint` | `report`. `role`: `player` | `reported_player` | `admin`.
+Optional request fields (present in batch files, all optional over HTTP): `ticket_id`, `reporter_hash`, `reported_nick`,
+`rule_refs_raw`, `created_at`, `server_lang`, `region`, `images_count`. Batch tools must pass them through as-is.
 
 Response `200`:
 ```json

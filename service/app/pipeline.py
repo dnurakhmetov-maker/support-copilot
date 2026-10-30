@@ -24,7 +24,7 @@ PRIORITIES = {"p0", "p1", "p2", "p3"}
 try:  # pragma: no cover
     from service.app.normalize import detect_lang as _detect_lang, normalize as _normalize  # type: ignore
 except Exception:  # TEMP fallback until Backend's normalize.py lands
-    _KK = set("әғқңөұүһі")
+    _KK = set("әғқңөұүһ")  # Kazakh-specific; "і" alone is also Ukrainian
     _UZ_CYR = set("ўқғҳ")
     _UK = set("їєґ")
     _UZ_LAT = re.compile(r"\b(\w+o['ʻ‘’]\w*|\w*g['ʻ‘’]\w+|qanday|nega|men|menga|siz|iltimos|yordam|qil\w*|bo['ʻ‘’]?l\w*|kerak|rahmat|salom|akkaunt\w*)\b", re.I)
@@ -40,7 +40,8 @@ except Exception:  # TEMP fallback until Backend's normalize.py lands
         if cyr == 0 and lat == 0:
             return "und"
         if cyr >= lat:
-            if any(ch in _KK for ch in low) and not any(ch in _UK for ch in low):
+            kk_hits = sum(ch in _KK for ch in low)
+            if kk_hits >= 2 and not any(ch in _UK for ch in low):
                 return "kk"
             if any(ch in _UZ_CYR for ch in low):
                 return "uz"
@@ -100,6 +101,14 @@ def _parse_llm_json(text: str) -> dict:
 AUTO_OK_COMPLAINT = {"complaint.invalid"}
 # Priority ceilings from taxonomy criteria (the LLM over-escalates); p0 is reserved for these categories.
 P0_ALLOWED = {"report.account", "report.payment"}
+# Allowed priority range per category, derived from taxonomy priority criteria. First item = default.
+PRIORITY_RANGE = {
+    "complaint.insult": ("p2", "p1"), "complaint.dm": ("p2", "p1"), "complaint.other": ("p2", "p1", "p3"),
+    "complaint.cheat": ("p1",), "complaint.scam": ("p1", "p2"), "complaint.rmt_ads": ("p1",),
+    "complaint.admin": ("p1", "p2"), "complaint.invalid": ("p3",),
+    "report.question": ("p3", "p2"), "report.help": ("p3", "p2"), "report.complaint": ("p2", "p1"),
+    "report.account": ("p0",), "report.payment": ("p0",), "report.offtopic": ("p3",),
+}
 
 
 def _player_text(req: TriageRequest) -> str:
@@ -146,8 +155,9 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     cases = load_cases().search(text or ".", kind=req.kind, k=6, exclude_id=req.ticket_id)
     rules = _candidate_rules(text, req.kind, cases, rules_idx)
     msgs = [{"role": m.role, "text": m.text, "attachments": m.attachments} for m in req.messages if m.role != "admin"]
-    meta_fields = {"reported_nick": nickname, "player_rule_field": req.rule_refs_raw, "server_lang": req.server_lang,
-                   "video_link_present": has_evidence}
+    shots = req.images_count if req.images_count is not None else sum(m.attachments for m in req.messages)
+    meta_fields = {"accused_player_nick": nickname, "player_rule_field": req.rule_refs_raw, "server_lang": req.server_lang,
+                   "region": req.region, "screenshots_attached": shots, "video_link_present": has_evidence}
     user = build_user_prompt(req.kind, msgs, meta_fields, rules, cases[:4], lang)
 
     try:
@@ -181,8 +191,12 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
             needs_human = True
             reasons += v.force_human_reasons
 
-    if priority == "p0" and category not in P0_ALLOWED and not re.search(r"(угрож|убью|найду тебя|swat|суицид)", text, re.I):
-        priority = "p1"
+    threat = re.search(r"(угрож\w* (в реал|irl|найти|убить)|найду тебя|вычислю|swat|суицид)", text, re.I)
+    allowed = PRIORITY_RANGE.get(category)
+    if threat:
+        priority = "p0"
+    elif allowed and priority not in allowed:
+        priority = allowed[0]
 
     forced = []
     if req.kind == "complaint" and category not in AUTO_OK_COMPLAINT and not out.get("is_spam_or_duplicate"):
