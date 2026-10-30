@@ -2,8 +2,15 @@
 
 Run from the repo root:  uvicorn service.app.main:app --port 8000
 
-POST /triage   TriageRequest -> service.app.pipeline.triage() -> TriageResponse
-GET  /health   liveness + whether the indexes are warm
+POST /triage                 TriageRequest -> service.app.pipeline.triage() -> TriageResponse
+GET  /health                 liveness + whether the indexes are warm
+Admin API (SQLite, see service/app/storage.py):
+POST /tickets                ingest + triage + store -> Ticket (idempotent by ticket_id)
+GET  /queue                  Ticket[] sorted p0 -> p3, then oldest first
+GET  /tickets/{id}           Ticket with history
+POST /tickets/{id}/action    send | edit | escalate, appended to history
+GET  /stats                  counts, needs_human share, avg latency
+GET  /rules/{id}             rule text for a canonical citation id (tooltips)
 
 /triage never returns 500 because of the pipeline: any exception degrades to a schema-valid
 "needs human" answer (draft_reply=null, needs_human=true) with the reason in `reasons`.
@@ -12,18 +19,20 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import time
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from contract.schemas import Extracted, TriageRequest, TriageResponse
-from service.app import pipeline
+from contract.schemas import ActionRequest, Extracted, Priority, Status, Ticket, TriageRequest, TriageResponse
+from service.app import pipeline, storage
 
 VERSION = os.getenv("APP_VERSION", "0.1.0")
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
@@ -106,11 +115,85 @@ def _degraded(req: TriageRequest, reason: str) -> TriageResponse:
         draft_reply=None, needs_human=True, confidence=0.0, reasons=[reason])
 
 
-@app.post("/triage", response_model=TriageResponse)
-def triage(req: TriageRequest) -> TriageResponse:
-    # sync handler: FastAPI runs it in a worker thread, so the blocking LLM call doesn't stall the event loop
+def _safe_triage(req: TriageRequest) -> TriageResponse:
     try:
         return pipeline.triage(req)
     except Exception as e:
         log.exception("pipeline failed for ticket_id=%s", req.ticket_id)
         return _degraded(req, f"ошибка обработки ({type(e).__name__}) — требуется администратор")
+
+
+@app.post("/triage", response_model=TriageResponse)
+def triage(req: TriageRequest) -> TriageResponse:
+    # sync handler: FastAPI runs it in a worker thread, so the blocking LLM call doesn't stall the event loop
+    return _safe_triage(req)
+
+
+# ---------- admin API ----------
+def _not_found(ticket_id: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"ticket {ticket_id!r} not found")
+
+
+@app.post("/tickets", response_model=Ticket)
+def create_ticket(req: TriageRequest) -> Ticket:
+    """Ingest + triage + store. Re-posting an existing ticket_id returns the stored ticket (safe client retries)."""
+    ticket_id = req.ticket_id or f"t_{uuid.uuid4().hex[:12]}"
+    if existing := storage.get_ticket(ticket_id):
+        return existing
+    t0 = time.perf_counter()
+    result = _safe_triage(req)
+    latency_ms = (time.perf_counter() - t0) * 1000
+    try:
+        return storage.insert_ticket(ticket_id, req, result, latency_ms)
+    except sqlite3.IntegrityError:  # the same ticket_id was stored concurrently
+        return storage.get_ticket(ticket_id)
+
+
+@app.get("/queue", response_model=list[Ticket])
+def queue(status: Status | None = None, priority: Priority | None = None,
+          limit: int = Query(50, ge=1, le=500)) -> list[Ticket]:
+    return storage.list_queue(status, priority, limit)
+
+
+@app.get("/tickets/{ticket_id}", response_model=Ticket)
+def get_ticket(ticket_id: str) -> Ticket:
+    if ticket := storage.get_ticket(ticket_id):
+        return ticket
+    raise _not_found(ticket_id)
+
+
+@app.post("/tickets/{ticket_id}/action", response_model=Ticket)
+def ticket_action(ticket_id: str, body: ActionRequest) -> Ticket:
+    """send: draft as is (or final_text if given); edit: final_text required; escalate: hand to a senior admin."""
+    ticket = storage.get_ticket(ticket_id)
+    if ticket is None:
+        raise _not_found(ticket_id)
+    final_text = (body.final_text or "").strip() or None
+    if body.action == "send" and final_text is None:
+        final_text = ticket.triage.draft_reply.text if ticket.triage.draft_reply else None
+        if final_text is None:
+            raise HTTPException(status_code=400, detail="nothing to send: no draft, pass final_text")
+    if body.action == "edit" and final_text is None:
+        raise HTTPException(status_code=400, detail="edit requires a non-empty final_text")
+    updated = storage.add_action(ticket_id, body.action, final_text, body.comment)
+    if updated is None:
+        raise _not_found(ticket_id)
+    return updated
+
+
+@app.get("/stats")
+def stats() -> dict:
+    return storage.stats()
+
+
+@app.get("/rules/{rule_id}")
+def get_rule(rule_id: str) -> dict:
+    from service.app.rag.rules_index import load_rules
+
+    try:
+        point = load_rules().get(rule_id.strip())
+    except (OSError, ValueError, KeyError) as e:  # rules.json missing or unreadable
+        raise HTTPException(status_code=404, detail=f"rules are not available: {type(e).__name__}") from e
+    if point is None:
+        raise HTTPException(status_code=404, detail=f"rule {rule_id!r} not found")
+    return {"id": point.cid, "section": point.section_title, "text": point.text}
