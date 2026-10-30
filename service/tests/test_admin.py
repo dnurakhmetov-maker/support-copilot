@@ -1,9 +1,10 @@
-"""Admin API tests: /tickets, /queue, /tickets/{id}, /tickets/{id}/action, /stats, /rules/{id}.
+"""Admin API tests: /tickets, /queue, /tickets/{id}, /tickets/{id}/action, /stats, /rules/{id}, /templates.
 
 All texts are INVENTED. The SQLite DB lives in tmp_path (DB_PATH), never in data/.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 
@@ -247,3 +248,53 @@ def test_rules_endpoint_without_data(tmp_path, monkeypatch):
         assert r.status_code == 404 and r.json()["error"] == "not_found"
     finally:
         rules_index.load_rules.cache_clear()
+
+
+# ---------- training signal: model draft + admin's final text + history, end-to-end ----------
+def test_e2e_training_signal_draft_vs_final(fake_data, db, monkeypatch):  # noqa: F811
+    """Real pipeline with a fake LLM reply: the stored ticket keeps the model's draft next to what the admin sent."""
+    from service.app.llm.provider import LLMResult
+
+    draft = "Здравствуйте! Как поменять цвет машины, смотрите в меню выдуманного гаража."
+    reply = {"lang": "ru", "category": "report.question", "priority": "p3", "is_spam_or_duplicate": False,
+             "extracted": {"nickname": None, "rule_refs": [], "has_evidence": False, "server": None},
+             "draft_text": draft, "cited": [], "needs_human": False, "confidence": 0.9, "reasons": []}
+    monkeypatch.setattr(pipeline, "complete_json",
+                        lambda *a, **kw: LLMResult(json.dumps(reply, ensure_ascii=False), 100, 50, 0.01, "fake"))
+    final = "Здравствуйте! Цвет меняется в меню гаража, кнопка «Покраска». Выдуманный текст админа."
+    with TestClient(main.app) as c:
+        t = c.post("/tickets", json={**REPORT, "ticket_id": "t_signal"}).json()
+        model_draft = t["triage"]["draft_reply"]["text"]
+        assert model_draft.startswith("Здравствуйте!")
+        c.post("/tickets/t_signal/action", json={"action": "edit", "final_text": final, "comment": "уточнил кнопку"})
+        got = c.get("/tickets/t_signal").json()
+    assert got["triage"]["draft_reply"]["text"] == model_draft          # model's draft is untouched
+    assert got["final_text"] == final and got["status"] == "sent"       # what the admin actually sent
+    assert got["history"] == [{"action": "edit", "at": got["history"][0]["at"], "final_text": final,
+                               "comment": "уточнил кнопку"}]
+
+
+# ---------- GET /templates ----------
+def test_templates_served_from_data_dir(tmp_path, monkeypatch):
+    invented = [{"kind": "report", "size": 120, "template": "Здравствуйте! Выдуманный шаблон {nick}.",
+                 "distinct_replies_share": 0.4}]
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "proposals.json").write_text(json.dumps(invented, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SKIP_WARMUP", "1")
+    with TestClient(main.app) as c:
+        r = c.get("/templates")
+    assert r.status_code == 200 and r.json() == invented
+
+
+def test_templates_missing_or_broken_404(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SKIP_WARMUP", "1")
+    with TestClient(main.app) as c:
+        r = c.get("/templates")
+        assert r.status_code == 404 and r.json()["error"] == "not_found"
+        assert "python -m service.app.templates_mining" in r.json()["detail"]
+        (tmp_path / "templates").mkdir()
+        (tmp_path / "templates" / "proposals.json").write_text("{broken", encoding="utf-8")
+        r = c.get("/templates")
+        assert r.status_code == 404 and "unreadable" in r.json()["detail"]
