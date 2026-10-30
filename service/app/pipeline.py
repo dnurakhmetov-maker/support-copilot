@@ -40,7 +40,7 @@ except Exception:  # TEMP fallback until Backend's normalize.py lands
             return text.translate(_LOOKALIKE)
         return text
 
-    def _detect_lang(text: str) -> str:
+    def _detect_lang(text: str, region: str | None = None, server_lang: str | None = None) -> str:
         low = text.lower()
         cyr = sum("а" <= ch <= "я" or ch in "ёәғқңөұүһіўҳїєґ" for ch in low)
         lat = sum("a" <= ch <= "z" for ch in low)
@@ -218,7 +218,7 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     rules_idx = load_rules()
     raw_text = _player_text(req)
     text = _normalize(raw_text, req.region, req.server_lang) if raw_text else raw_text
-    lang = _detect_lang(text) if text else "und"
+    lang = _detect_lang(text, req.region, req.server_lang) if text else "und"
     if lang == "ru" and (req.region == "kz" or req.server_lang == "kk") and re.search(r"[әғқңөұүһі]", text.lower()) \
             and not re.search(r"[їєґ]", raw_text.lower()):
         lang = "kk"  # on Kazakh servers one Kazakh-only letter is enough
