@@ -181,6 +181,30 @@ def _local_category(req: TriageRequest, text: str) -> tuple[str | None, float]:
         return None, 0.0
 
 
+_ANY_NICK = re.compile(r"\b[A-Z][a-z]+_[A-Z][a-z]+\d*\b")
+_GREETING_NICK = re.compile(r"((?:Уважаем\w*|Приветствую,?\s*уважаем\w*|Здравствуйте,?|Hurmatli|Құрметті)\s+)"
+                            r"[A-Z][a-z]+_[A-Z][a-z]+\d*")
+
+
+def _retrieval_draft(req: TriageRequest, text: str, lang: str, cases, nickname: str | None, rules_idx):
+    """LLM-free draft: the real admin reply to the most similar past ticket, de-personalised and validated."""
+    pool = []
+    if lang in ("kk", "uz"):
+        pool = load_cases().search(text or ".", kind=req.kind, k=1, admin_lang=lang)
+    pool = pool or cases[:1]
+    if not pool:
+        return None
+    t = pool[0].admin
+    t = _GREETING_NICK.sub(lambda m: m.group(1) + ("игрок" if lang not in ("kk", "uz") else "ойыншы" if lang == "kk" else "o'yinchi"), t)
+    t = _ANY_NICK.sub(nickname or "игрок", t)
+    t = _PLACEHOLDER.sub("", t)
+    t = " ".join(t.split())
+    v = validate_draft(t, [], rules_idx)
+    if not v.text:
+        return None
+    return DraftReply(lang=lang if lang in LANGS else "ru", text=v.text[:900], cited=v.cited)
+
+
 def _player_text(req: TriageRequest) -> str:
     return " ".join(m.text for m in req.messages if m.role == "player").strip()
 
@@ -261,6 +285,11 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
         reason = ("модель отказалась обрабатывать текст (фильтр безопасности провайдера) — требуется администратор"
                   if meta.error and "blocked" in meta.error else "LLM недоступен — требуется администратор")
         fb = _fallback(req, lang, reason, nickname, has_evidence)
+        disabled = bool(meta.error and ("disabled" in meta.error or "not set" in meta.error))
+        rd = None if disabled else _retrieval_draft(req, text, lang, cases, nickname, rules_idx)
+        if rd:
+            fb.draft_reply = rd
+            fb.reasons.append("черновик подобран из ответа админа на похожее обращение (LLM не ответил вовремя)")
         if local_cat and local_p >= 0.5:
             fb.category = local_cat
             fb.priority = PRIORITY_RANGE.get(local_cat, ("p2",))[0]
