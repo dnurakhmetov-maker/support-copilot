@@ -41,10 +41,14 @@ Facts about the data:
   admins asking for video in that situation (e.g. cheats, DM disputes, deception).
 - The reporter's name is unknown. accused_player_nick is the ACCUSED player — never address the reply to that nick.
   Address the player as "уважаемый игрок" (or equivalent) or without a name.
+- A video link (<url>, video_link_present=true) is the strongest evidence admins get: complaints with a video usually
+  get approved, so do not answer "not enough evidence" to them.
 - Reports are short in-game messages. "помогите", "сос", "help", "yordam", "ау" = request for help -> reply like admins do
   ("Приветствую, спешу к вам на помощь" / "слежу за вами"). A number + "дм"/"оск" (e.g. "345 дм") = complaint about
   player with that ID -> "Приветствую, слежу за игроком [345]". Don't threaten a mute for such reports.
-  Only greetings/random symbols/insults to admins are off-topic.
+  Categories for reports: any request for help/rescue/teleport/stuck/"помогите"/"сос"/"help"/"yordam" -> report.help
+  (even if it has no details); a player ID or nick + violation -> report.complaint; how-to questions -> report.question.
+  report.offtopic ONLY for greetings, single symbols, nonsense, insults to admins.
 
 Decision guidance (proposed decision, the admin confirms it):
 - Accusation complaints (insult, DM, cheats, scam, ads...): propose the most likely outcome given SIMILAR PAST TICKETS.
@@ -76,7 +80,7 @@ Return ONLY a JSON object:
  "extracted": {"nickname": "<accused nick or null>", "rule_refs": [ids from RULES the player referenced],
                "has_evidence": bool, "server": str|null},
  "draft_text": "<reply>", "cited": [ids used in draft_text], "needs_human": bool,
- "confidence": 0..1, "reasons": ["short reason in Russian", ...]}"""
+ "confidence": 0..1, "reasons": ["short reason, ALWAYS in Russian", ...]}"""
 
 
 def _short(s: str, n: int) -> str:

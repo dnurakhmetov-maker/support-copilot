@@ -6,8 +6,7 @@ Config (env / .env):
   LLM_API_KEY    provider key (never commit)
   LLM_BASE_URL   for openai_compat (Groq, OpenRouter, local Ollama ...)
   LLM_TIMEOUT_S  per-request timeout, default 4.0 (p95 budget is 5s)
-  LLM_PRICE_IN_PER_M / LLM_PRICE_OUT_PER_M  USD per 1M tokens, for cost reporting.
-      Defaults are placeholders — set them from the provider's current price page.
+  LLM_PRICE_IN_PER_M / LLM_PRICE_OUT_PER_M  USD per 1M tokens override; defaults come from PRICES_PER_M.
 
 Only stdlib HTTP — no SDK dependency.
 """
@@ -50,9 +49,18 @@ class LLMResult:
 
     @property
     def cost_usd(self) -> float:
-        pin = float(os.getenv("LLM_PRICE_IN_PER_M", "0.10"))
-        pout = float(os.getenv("LLM_PRICE_OUT_PER_M", "0.40"))
+        pin, pout = PRICES_PER_M.get(self.model, (None, None))
+        pin = float(os.getenv("LLM_PRICE_IN_PER_M") or pin or 0.30)
+        pout = float(os.getenv("LLM_PRICE_OUT_PER_M") or pout or 2.50)
         return self.tokens_in / 1e6 * pin + self.tokens_out / 1e6 * pout
+
+
+# USD per 1M tokens (input, output), list prices checked 2026-10-30 — re-check before the final report.
+PRICES_PER_M = {
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+    "gemini-3.1-flash-lite": (0.25, 1.50),
+    "gemini-3.5-flash": (1.50, 9.00),
+}
 
 
 def _post(url: str, body: dict, headers: dict, timeout: float) -> dict:
