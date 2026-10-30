@@ -24,7 +24,7 @@ PRIORITIES = {"p0", "p1", "p2", "p3"}
 try:  # pragma: no cover
     from service.app.normalize import detect_lang as _detect_lang, normalize as _normalize  # type: ignore
 except Exception:  # TEMP fallback until Backend's normalize.py lands
-    _KK = set("әғқңөұүһі")
+    _KK = set("әғқңөұүһ")  # Kazakh-specific; "і" alone is also Ukrainian
     _UZ_CYR = set("ўқғҳ")
     _UK = set("їєґ")
     _UZ_LAT = re.compile(r"\b(\w+o['ʻ‘’]\w*|\w*g['ʻ‘’]\w+|qanday|nega|men|menga|siz|iltimos|yordam|qil\w*|bo['ʻ‘’]?l\w*|kerak|rahmat|salom|akkaunt\w*)\b", re.I)
@@ -40,7 +40,8 @@ except Exception:  # TEMP fallback until Backend's normalize.py lands
         if cyr == 0 and lat == 0:
             return "und"
         if cyr >= lat:
-            if any(ch in _KK for ch in low) and not any(ch in _UK for ch in low):
+            kk_hits = sum(ch in _KK for ch in low)
+            if kk_hits >= 2 and not any(ch in _UK for ch in low):
                 return "kk"
             if any(ch in _UZ_CYR for ch in low):
                 return "uz"
@@ -77,6 +78,59 @@ class TriageMeta:
     error: str | None = None
     dropped_citations: list[str] = field(default_factory=list)
     invalid_mentions: list[str] = field(default_factory=list)
+
+
+_STR = {"type": "STRING"}
+_STR_N = {"type": "STRING", "nullable": True}
+_ARR = {"type": "ARRAY", "items": {"type": "STRING"}}
+TRIAGE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "lang": {"type": "STRING", "enum": ["ru", "kk", "uz", "en", "und"]},
+        "category": _STR,
+        "priority": {"type": "STRING", "enum": ["p0", "p1", "p2", "p3"]},
+        "is_spam_or_duplicate": {"type": "BOOLEAN"},
+        "extracted": {"type": "OBJECT", "properties": {"nickname": _STR_N, "rule_refs": _ARR,
+                                                       "has_evidence": {"type": "BOOLEAN"}, "server": _STR_N}},
+        "draft_text": _STR, "cited": _ARR, "needs_human": {"type": "BOOLEAN"},
+        "confidence": {"type": "NUMBER"}, "reasons": _ARR,
+    },
+    "required": ["lang", "category", "priority", "is_spam_or_duplicate", "extracted", "draft_text", "cited",
+                 "needs_human", "confidence", "reasons"],
+    "propertyOrdering": ["lang", "category", "priority", "is_spam_or_duplicate", "extracted", "draft_text", "cited",
+                         "needs_human", "confidence", "reasons"],
+}
+LATENCY_BUDGET_S = 4.6  # p95 must stay under 5s
+
+_BAD_ESCAPE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
+
+
+def _parse_llm_json(text: str) -> dict:
+    """LLM JSON is sometimes slightly broken (bad \\u escapes, code fences). Repair instead of failing the ticket."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.strip("`").split("\n", 1)[-1]
+    start, end = t.find("{"), t.rfind("}")
+    if start >= 0 and end > start:
+        t = t[start: end + 1]
+    try:
+        return json.loads(t, strict=False)
+    except json.JSONDecodeError:
+        return json.loads(_BAD_ESCAPE.sub(r"\\\\", t), strict=False)
+
+
+# Complaint categories that are real accusations: the decision depends on evidence only admins see.
+AUTO_OK_COMPLAINT = {"complaint.invalid"}
+# Priority ceilings from taxonomy criteria (the LLM over-escalates); p0 is reserved for these categories.
+P0_ALLOWED = {"report.account", "report.payment"}
+# Allowed priority range per category, derived from taxonomy priority criteria. First item = default.
+PRIORITY_RANGE = {
+    "complaint.insult": ("p2", "p1"), "complaint.dm": ("p2", "p1"), "complaint.other": ("p2", "p1", "p3"),
+    "complaint.cheat": ("p1",), "complaint.scam": ("p1", "p2"), "complaint.rmt_ads": ("p1",),
+    "complaint.admin": ("p1", "p2"), "complaint.invalid": ("p3",),
+    "report.question": ("p3", "p2"), "report.help": ("p3", "p2"), "report.complaint": ("p2", "p1"),
+    "report.account": ("p0",), "report.payment": ("p0",), "report.offtopic": ("p3",),
+}
 
 
 def _player_text(req: TriageRequest) -> str:
@@ -123,17 +177,28 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     cases = load_cases().search(text or ".", kind=req.kind, k=6, exclude_id=req.ticket_id)
     rules = _candidate_rules(text, req.kind, cases, rules_idx)
     msgs = [{"role": m.role, "text": m.text, "attachments": m.attachments} for m in req.messages if m.role != "admin"]
-    meta_fields = {"reported_nick": nickname, "player_rule_field": req.rule_refs_raw, "server_lang": req.server_lang,
-                   "video_link_present": has_evidence}
+    shots = req.images_count if req.images_count is not None else sum(m.attachments for m in req.messages)
+    meta_fields = {"accused_player_nick": nickname, "player_rule_field": req.rule_refs_raw, "server_lang": req.server_lang,
+                   "region": req.region, "screenshots_attached": shots, "video_link_present": has_evidence}
     user = build_user_prompt(req.kind, msgs, meta_fields, rules, cases[:4], lang)
 
-    try:
-        res = complete_json(SYSTEM, user)
-        meta.llm_latency_s, meta.tokens_in, meta.tokens_out, meta.cost_usd = res.latency_s, res.tokens_in, res.tokens_out, res.cost_usd
-        out = json.loads(res.text)
-        meta.llm_ok = True
-    except (LLMError, json.JSONDecodeError, ValueError) as e:
-        meta.error = str(e)[:300]
+    out = None
+    for attempt in range(2):  # one retry if the first call fails fast enough to fit the latency budget
+        left = LATENCY_BUDGET_S - (time.time() - t0)
+        if left < 1.2:
+            break
+        try:
+            res = complete_json(SYSTEM, user, schema=TRIAGE_SCHEMA, timeout=min(left, 4.0))
+            meta.llm_latency_s += res.latency_s
+            meta.tokens_in += res.tokens_in
+            meta.tokens_out += res.tokens_out
+            meta.cost_usd += res.cost_usd
+            out = _parse_llm_json(res.text)
+            meta.llm_ok, meta.error = True, None
+            break
+        except (LLMError, json.JSONDecodeError, ValueError) as e:
+            meta.error = f"attempt {attempt + 1}: {str(e)[:280]}"
+    if out is None:
         meta.latency_s = time.time() - t0
         return _fallback(req, lang, "LLM недоступен — требуется администратор", nickname, has_evidence), meta
 
@@ -158,7 +223,16 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
             needs_human = True
             reasons += v.force_human_reasons
 
+    threat = re.search(r"(угрож\w* (в реал|irl|найти|убить)|найду тебя|вычислю|swat|суицид)", text, re.I)
+    allowed = PRIORITY_RANGE.get(category)
+    if threat:
+        priority = "p0"
+    elif allowed and priority not in allowed:
+        priority = allowed[0]
+
     forced = []
+    if req.kind == "complaint" and category not in AUTO_OK_COMPLAINT and not out.get("is_spam_or_duplicate"):
+        forced.append("решение по жалобе принимает администратор: доказательства (скриншоты/видео) проверяет человек")
     if category in set(load_taxonomy().get("needs_human_always", [])):
         forced.append(f"категория {category} всегда передаётся администратору")
     forced += _guards_check(req, category)
