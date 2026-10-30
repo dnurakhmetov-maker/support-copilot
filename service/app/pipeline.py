@@ -46,11 +46,11 @@ except Exception:  # TEMP fallback until Backend's normalize.py lands
         if cyr == 0 and lat == 0:
             return "und"
         if cyr >= lat:
-            kk_hits = sum(ch in _KK for ch in low)
-            if kk_hits >= 2 and not any(ch in _UK for ch in low):
-                return "kk"
-            if any(ch in _UZ_CYR for ch in low):
+            if any(ch in "ўҳ" for ch in low):  # Uzbek-only Cyrillic letters
                 return "uz"
+            kk_strong = sum(ch in "әңөұүһ" for ch in low)  # Kazakh-only (ғ, қ are shared with Uzbek)
+            if not any(ch in _UK for ch in low) and (kk_strong >= 1 or sum(ch in "ғқі" for ch in low) >= 2):
+                return "kk"
             return "ru"
         if _UZ_LAT.search(low):
             return "uz"
@@ -180,6 +180,8 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     if lang == "ru" and (req.region == "kz" or req.server_lang == "kk") and re.search(r"[әғқңөұүһі]", text.lower()) \
             and not re.search(r"[їєґ]", raw_text.lower()):
         lang = "kk"  # on Kazakh servers one Kazakh-only letter is enough
+    if lang == "kk" and req.region == "uz" and not re.search(r"[әңөұүһі]", text.lower()):
+        lang = "uz"  # Uzbek Cyrillic shares ғ/қ with Kazakh
     has_evidence = bool(re.search(r"<url>|https?://|youtu|vk\.com|disk\.|imgur|rutube", text, re.I))
     nickname = req.reported_nick
 
