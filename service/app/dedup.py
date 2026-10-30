@@ -6,7 +6,7 @@ check(req) -> str | None
 
 Time: req.created_at (ISO 8601, naive = UTC) if present, else the current time.
 Similarity: normalized text -> set of character 3-grams. Duplicate if the texts are equal, or
-  Jaccard >= JACCARD_MIN, or the shorter text is (almost) contained in the longer one (overlap >= OVERLAP_MIN
+  Jaccard >= JACCARD_MIN (0.4), or the shorter text is (almost) contained in the longer one (overlap >= OVERLAP_MIN
   with at least MIN_NGRAMS 3-grams, so one-word messages only match exactly).
 Different non-empty reported_nick -> not a duplicate (same words about another player is a new complaint).
 
@@ -24,7 +24,7 @@ from contract.schemas import TriageRequest
 from service.app.normalize import normalize
 
 WINDOW = timedelta(minutes=60)
-JACCARD_MIN = 0.6
+JACCARD_MIN = 0.4  # tuned on train: 0.4-0.6 pairs are mostly rephrased repeats, 0.2-0.4 mostly follow-ups
 OVERLAP_MIN = 0.85
 MIN_NGRAMS = 6
 N = 3

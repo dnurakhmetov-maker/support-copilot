@@ -117,14 +117,18 @@ def _cyrillic(low: str, tokens: list[str], region: str, server_lang: str) -> str
             return "uz"
         return "ru"
 
+    kk_w, uk_w = _score(tokens, KK_WORDS), _score(tokens, UK_WORDS)
+    uz_w = _score(tokens, UZ_CYR_WORDS) + len(_UZ_CYR_SUFFIX.findall(low))
+    # one stray special letter in otherwise Russian text is a typo/keyboard slip, not a language (seen in valid)
+    stray = kk_only + uz_only + shared == 1 and not i_count and not (kk_w or uz_w)
+    if stray:
+        return "ru"
     if uz_only and not kk_only:
         return "uz"
     if kk_only and not uk:
         return "kk"
     if kk_only >= 2:  # Kazakh letters outweigh a stray Ukrainian-looking one
         return "kk"
-    kk_w, uk_w = _score(tokens, KK_WORDS), _score(tokens, UK_WORDS)
-    uz_w = _score(tokens, UZ_CYR_WORDS) + len(_UZ_CYR_SUFFIX.findall(low))
     if shared:  # Uzbek has no "і"; without it, decide by words
         return "kk" if i_count or kk_w > uz_w else "uz"
     if uk:
@@ -155,10 +159,14 @@ def _latin(low: str, tokens: list[str], region: str, server_lang: str) -> str:
     return "ru"  # Russian written in Latin letters: reply in Russian
 
 
+# Not language evidence: data placeholders (<url>, <digits>), links, Latin game nicks (First_Last7)
+_NOT_LANG = re.compile(r"<[a-z_]+>|https?://\S+|www\.\S+|\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b")
+
+
 def detect_lang(text: str, region: str | None = None, server_lang: str | None = None) -> str:
     if not text:
         return "und"
-    low = text.lower().translate(_APOSTROPHES)
+    low = _NOT_LANG.sub(" ", text).lower().translate(_APOSTROPHES)
     region, server_lang = (region or "").lower(), (server_lang or "").lower()
     cyr = sum(("а" <= ch <= "я") or ch in _CYR_EXTRA for ch in low)
     lat = sum("a" <= ch <= "z" for ch in low)

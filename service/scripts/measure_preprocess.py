@@ -157,6 +157,25 @@ def measure_dedup() -> None:
           + ", ".join(f"{k} {pct(flagged[k], kinds[k])}" for k in sorted(kinds)))
     print(f"share of same-reporter repeats that dedup flags: {pct(sum(flagged.values()), sum(repeats.values()))}")
     print(f"speed: {1000 * dt / max(1, n):.3f} ms/ticket")
+    flagged_ids = set()
+    for r in with_hash:
+        if dedup.check(r):
+            flagged_ids.add(r.ticket_id)
+    dedup.reset()
+    _by_verdict(rows, lambda t: str(t["ticket_id"]) in flagged_ids, "dedup flagged")
+
+
+def _by_verdict(rows: list[dict], pred, title: str) -> None:
+    """Rate per admin verdict for complaints (appeal_* / duplicate verdicts serve as a reference signal)."""
+    tot, hit = collections.Counter(), collections.Counter()
+    for t in rows:
+        if t.get("kind") != "complaint":
+            continue
+        v = t.get("verdict") or "none"
+        v = "appeal_*" if v.startswith("appeal") else v
+        tot[v] += 1
+        hit[v] += bool(pred(t))
+    print(f"{title} by complaint verdict: " + ", ".join(f"{v} {pct(hit[v], c)} (n={c})" for v, c in tot.most_common()))
 
 
 def measure_guards() -> None:
@@ -177,6 +196,7 @@ def measure_guards() -> None:
             by_reason_kind[(topic, r.kind)] += 1
     n = len(rows)
     print(f"\n== guards on tickets_train.jsonl.gz: {n} tickets")
+    _by_verdict(rows, lambda t: bool(guards.check(to_request(t), "")), "any guard reason")
     print(f"any reason: {sum(any_hit.values())} = {pct(sum(any_hit.values()), n)}  "
           + ", ".join(f"{k} {pct(any_hit[k], kinds[k])}" for k in sorted(kinds)))
     for topic, c in by_reason.most_common():

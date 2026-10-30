@@ -104,6 +104,12 @@ def test_detect_lang_region_hint(text, region, server_lang, expected):
     ("Әкімші маған себепсіз бан берді, келіспеймін, қайта қарауды сұраймын", "обжалование"),
     ("admin menga sababsiz ban berdi, rozi emasman", "обжалование"),
     ("I was banned for no reason, appeal", "обжалование"),
+    ("а за что мне варн, я ничего не делал", "обжалование"),
+    ("не согл с решением, это не оскорбление", "обжалование"),
+    ("дали мут без предупреждения", "обжалование"),
+    ("без причины дали бан на три дня", "обжалование"),
+    ("прошу опру, я был в зелёной зоне", "обжалование"),
+    ("можно докву пожалуйста", "обжалование"),
 ])
 def test_guards_trigger(text, topic):
     reasons = guards.check(req(text), "report.question")
@@ -119,6 +125,8 @@ def test_guards_trigger(text, topic):
     ("списался с админом, жду ответа", "report"),
     ("он убил меня ни за что", "complaint"),                       # not about own punishment
     ("где найти работу полицейского?", "report"),
+    ("за что можно получить права на машину?", "report"),          # "за что" without a punishment word
+    ("он без причины убил меня на спавне", "complaint"),
 ])
 def test_guards_quiet(text, kind):
     assert guards.check(req(text, kind=kind, region="kz" if "ә" in text else None), f"{kind}.question") == []
