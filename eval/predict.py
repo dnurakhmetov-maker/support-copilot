@@ -23,7 +23,10 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from contract.schemas import Extracted, TriageRequest, TriageResponse
+from service.app.classify import load_classifier
 from service.app.pipeline import TriageMeta, triage_with_meta
+from service.app.rag.cases_index import load_cases
+from service.app.rag.rules_index import load_rules
 
 
 def meta_path(out: Path) -> Path:
@@ -78,6 +81,10 @@ def main() -> None:
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     done = load_done(out) if a.resume else {}
+    # warm up indexes and the classifier before the loop, otherwise the first ticket takes ~15 s and spoils p95
+    t_warm = time.time()
+    load_rules(); load_cases(); load_classifier()
+    print(f"warm-up {time.time() - t_warm:.1f}s", flush=True)
     provider = os.getenv("LLM_PROVIDER", "gemini")
     print(f"{len(tickets)} tickets from {a.inp} | LLM_PROVIDER={provider} | reused from previous run: "
           f"{sum(t.get('ticket_id') in done for t in tickets)}", flush=True)
