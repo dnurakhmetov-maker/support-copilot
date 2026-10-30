@@ -28,6 +28,18 @@ def admin_text(t: dict) -> str:
     return " ".join(m["text"] for m in t.get("messages", []) if m.get("role") == "admin").strip()
 
 
+_UZ_LAT_MARKERS = ("hurmatli", "shikoyat", "rahmat", "yordam", "assalom", "o‘yin", "o'yin", "kuzat", "ma’muriyat")
+
+
+def _reply_lang(text: str) -> str:
+    low = text.lower()
+    if sum(ch in "әңөұүһ" for ch in low) >= 2:
+        return "kk"
+    if any(m in low for m in _UZ_LAT_MARKERS) or sum(ch in "ўҳ" for ch in low) >= 2:
+        return "uz"
+    return "other"
+
+
 @dataclass
 class Case:
     ticket_id: str
@@ -49,11 +61,23 @@ class CasesIndex:
                                    sublinear_tf=True, lowercase=True, dtype=np.float32)
         self.X = self.vec.fit_transform([c.player for c in cases])
 
-    def search(self, text: str, kind: str | None = None, k: int = 5, exclude_id: str | None = None) -> list[Case]:
+    @property
+    def admin_langs(self) -> np.ndarray:
+        """Language of each ADMIN reply (kk / uz / other) — for style examples in the reply language."""
+        if getattr(self, "_admin_langs", None) is None:
+            self._admin_langs = np.array([_reply_lang(c.admin) for c in self.cases])
+        return self._admin_langs
+
+    def search(self, text: str, kind: str | None = None, k: int = 5, exclude_id: str | None = None,
+               admin_lang: str | None = None) -> list[Case]:
         q = self.vec.transform([text])
         sims = (self.X @ q.T).toarray().ravel()
         if kind:
             sims = np.where(self.kinds == kind, sims, -1.0)
+        if admin_lang:
+            sims = np.where(self.admin_langs == admin_lang, sims, -1.0)
+            if not (sims > -1.0).any():
+                return []
         top = np.argpartition(-sims, min(k + 5, len(sims) - 1))[: k + 5]
         top = top[np.argsort(-sims[top])]
         out = []
@@ -85,8 +109,11 @@ def build(train_path: str | None = None) -> CasesIndex:
 def load_cases() -> CasesIndex:
     cache = Path(INDEX_DIR) / "cases.pkl"
     if cache.exists():
-        return pickle.loads(cache.read_bytes())
+        idx = pickle.loads(cache.read_bytes())
+        idx.admin_langs  # warm up (~2s once per process)
+        return idx
     idx = build()
+    idx.admin_langs
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_bytes(pickle.dumps(idx))
     return idx

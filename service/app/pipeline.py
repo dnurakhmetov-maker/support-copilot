@@ -30,7 +30,13 @@ except Exception:  # TEMP fallback until Backend's normalize.py lands
     _UZ_LAT = re.compile(r"\b(\w+o['ʻ‘’]\w*|\w*g['ʻ‘’]\w+|qanday|nega|men|menga|siz|iltimos|yordam|qil\w*|bo['ʻ‘’]?l\w*|kerak|rahmat|salom|akkaunt\w*)\b", re.I)
     _EN = re.compile(r"\b(the|is|are|please|help|my|i|you|how|what|account|stuck|player)\b", re.I)
 
+    _LOOKALIKE = str.maketrans({"ќ": "қ", "Ќ": "Қ", "ґ": "ғ", "Ґ": "Ғ", "ѕ": "ң", "Ѕ": "Ң", "є": "ә", "Є": "Ә",
+                                "ј": "ө", "Ј": "Ө", "ў": "ұ", "Ў": "Ұ", "ї": "ү", "Ї": "Ү"})
+
     def _normalize(text: str, region: str | None = None, server_lang: str | None = None) -> str:
+        # cp1251 look-alikes only on Kazakh servers — elsewhere є/ї are real Ukrainian letters (see docs/EDA.md)
+        if region == "kz" or server_lang == "kk":
+            return text.translate(_LOOKALIKE)
         return text
 
     def _detect_lang(text: str) -> str:
@@ -40,11 +46,11 @@ except Exception:  # TEMP fallback until Backend's normalize.py lands
         if cyr == 0 and lat == 0:
             return "und"
         if cyr >= lat:
-            kk_hits = sum(ch in _KK for ch in low)
-            if kk_hits >= 2 and not any(ch in _UK for ch in low):
-                return "kk"
-            if any(ch in _UZ_CYR for ch in low):
+            if any(ch in "ўҳ" for ch in low):  # Uzbek-only Cyrillic letters
                 return "uz"
+            kk_strong = sum(ch in "әңөұүһ" for ch in low)  # Kazakh-only (ғ, қ are shared with Uzbek)
+            if not any(ch in _UK for ch in low) and (kk_strong >= 1 or sum(ch in "ғқі" for ch in low) >= 2):
+                return "kk"
             return "ru"
         if _UZ_LAT.search(low):
             return "uz"
@@ -119,6 +125,19 @@ def _parse_llm_json(text: str) -> dict:
         return json.loads(_BAD_ESCAPE.sub(r"\\\\", t), strict=False)
 
 
+_CLOSING = {"kk": "Жабылды.", "uz": "Yopildi.", "en": "Closed."}
+
+# Fixed hand-off texts for categories that always go to a human: short, reviewed, no generation risk.
+HANDOFF = {
+    "ru": "Приветствую, ваше обращение передано администрации, ожидайте ответа.",
+    "kk": "Сәлеметсіз бе, өтінішіңіз әкімшілікке жіберілді, жауабын күтіңіз.",
+    "uz": "Assalomu alaykum, murojaatingiz ma'muriyatga yuborildi, iltimos, javobni kuting.",
+    "en": "Hello, your request has been forwarded to the administration, please wait for a reply.",
+}
+HANDOFF_CATEGORIES = {"report.account", "report.payment"}
+_PLACEHOLDER = re.compile(r"\s*(?:[#№]\s*)?<(?:digits|url|email|handle|nick)>(?:\s*(?:нөмірлі|-?raqamli|номер\w*))?", re.I)
+_CYR_NICK = re.compile(r"\b[А-ЯЁӘҒҚҢӨҰҮҺІ][а-яёәғқңөұүһі]+_[А-ЯЁӘҒҚҢӨҰҮҺІ][а-яёәғқңөұүһі]+\d*\b")
+
 # Complaint categories that are real accusations: the decision depends on evidence only admins see.
 AUTO_OK_COMPLAINT = {"complaint.invalid"}
 # Priority ceilings from taxonomy criteria (the LLM over-escalates); p0 is reserved for these categories.
@@ -171,6 +190,11 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     raw_text = _player_text(req)
     text = _normalize(raw_text, req.region, req.server_lang) if raw_text else raw_text
     lang = _detect_lang(text) if text else "und"
+    if lang == "ru" and (req.region == "kz" or req.server_lang == "kk") and re.search(r"[әғқңөұүһі]", text.lower()) \
+            and not re.search(r"[їєґ]", raw_text.lower()):
+        lang = "kk"  # on Kazakh servers one Kazakh-only letter is enough
+    if lang == "kk" and req.region == "uz" and not re.search(r"[әңөұүһі]", text.lower()):
+        lang = "uz"  # Uzbek Cyrillic shares ғ/қ with Kazakh
     has_evidence = bool(re.search(r"<url>|https?://|youtu|vk\.com|disk\.|imgur|rutube", text, re.I))
     nickname = req.reported_nick
 
@@ -180,7 +204,8 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     shots = req.images_count if req.images_count is not None else sum(m.attachments for m in req.messages)
     meta_fields = {"accused_player_nick": nickname, "player_rule_field": req.rule_refs_raw, "server_lang": req.server_lang,
                    "region": req.region, "screenshots_attached": shots, "video_link_present": has_evidence}
-    user = build_user_prompt(req.kind, msgs, meta_fields, rules, cases[:4], lang)
+    style = load_cases().search(text or ".", kind=req.kind, k=2, admin_lang=lang) if lang in ("kk", "uz") else []
+    user = build_user_prompt(req.kind, msgs, meta_fields, rules, cases[:4], lang, style)
 
     out = None
     for attempt in range(2):  # one retry if the first call fails fast enough to fit the latency budget
@@ -198,9 +223,13 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
             break
         except (LLMError, json.JSONDecodeError, ValueError) as e:
             meta.error = f"attempt {attempt + 1}: {str(e)[:280]}"
+            if "blocked by provider" in str(e) or "disabled" in str(e) or "not set" in str(e):
+                break  # retrying won't help
     if out is None:
         meta.latency_s = time.time() - t0
-        return _fallback(req, lang, "LLM недоступен — требуется администратор", nickname, has_evidence), meta
+        reason = ("модель отказалась обрабатывать текст (фильтр безопасности провайдера) — требуется администратор"
+                  if meta.error and "blocked" in meta.error else "LLM недоступен — требуется администратор")
+        return _fallback(req, lang, reason, nickname, has_evidence), meta
 
     # ---- post-processing: never trust the LLM blindly ----
     codes = {c["code"] for c in load_taxonomy()["categories"] if c["kind"] == req.kind}
@@ -211,9 +240,18 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     player_refs = [cid for cid in (rules_idx.resolve(str(r)) for r in ex.get("rule_refs") or []) if cid]
 
     draft = None
-    reasons = [str(r) for r in (out.get("reasons") or [])][:5]
+    # reasons are shown to Russian-speaking admins: keep Cyrillic ones only
+    reasons = [str(r) for r in (out.get("reasons") or []) if re.search(r"[А-Яа-яЁё]", str(r))][:5]
     needs_human = bool(out.get("needs_human", True))
     draft_text = (out.get("draft_text") or "").strip()
+    if category in HANDOFF_CATEGORIES:
+        draft_text = HANDOFF.get(out_lang, HANDOFF["ru"])
+    if draft_text:
+        draft_text = _PLACEHOLDER.sub("", draft_text)
+        if nickname and nickname not in draft_text:  # the model sometimes transliterates Latin nicks
+            draft_text = _CYR_NICK.sub(nickname, draft_text)
+    if draft_text and out_lang in _CLOSING:  # deterministic: no Russian closing word inside kk/uz/en replies
+        draft_text = re.sub(r"\b(Закрыто|Жалоба закрыта|Yopiq|Жабық)[.!]?", _CLOSING[out_lang], draft_text)
     if draft_text:
         v = validate_draft(draft_text, [str(c) for c in out.get("cited") or []], rules_idx)
         meta.dropped_citations, meta.invalid_mentions = v.dropped_citations, v.invalid_mentions

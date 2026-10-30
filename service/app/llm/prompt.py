@@ -12,7 +12,7 @@ from pathlib import Path
 from service.app.rag.cases_index import Case
 from service.app.rag.rules_index import RulePoint
 
-LANG_NAMES = {"ru": "Russian", "kk": "Kazakh (proper Kazakh Cyrillic: ә ғ қ ң ө ұ ү һ і)",
+LANG_NAMES = {"ru": "Russian", "kk": "Kazakh (proper Kazakh Cyrillic: ә ғ қ ң ө ұ ү һ і; natural phrasing: «Сәлеметсіз бе», «Құрметті ойыншы», «шағымыңыз қаралды», «чатты 30 минутқа бұғаттау», «көмекке асығамын», «Жабылды.»)",
               "uz": "Uzbek (same script as the player: Latin or Cyrillic)", "en": "English",
               "pt": "Portuguese", "es": "Spanish", "uk": "Russian (player wrote Ukrainian)", "und": "Russian (or the player's language if clearly identifiable)"}
 
@@ -39,6 +39,8 @@ Facts about the data:
   you don't. Short texts like "оск", "оск родни", "дм", "osk" are NORMAL complaints, not invalid ones.
   NEVER claim that evidence is missing because the text is short. Ask for video only when the similar cases show
   admins asking for video in that situation (e.g. cheats, DM disputes, deception).
+- Copy player nicknames EXACTLY as given (Latin letters, underscore, digits) — never transliterate or translate them.
+  Never copy anonymization tokens like <digits>, <url> from examples into the reply.
 - The reporter's name is unknown. accused_player_nick is the ACCUSED player — never address the reply to that nick.
   Address the player as "уважаемый игрок" (or equivalent) or without a name.
 - A video link (<url>, video_link_present=true) is the strongest evidence admins get: complaints with a video usually
@@ -57,8 +59,15 @@ Decision guidance (proposed decision, the admin confirms it):
   Set needs_human=true.
 - Disputes of the player's own punishment / complaints about an admin: most are rejected ("администратор предоставил
   доказательства вашего нарушения, наказание выдано верно"); propose that, needs_human=true.
+- Game-mechanics questions: you do NOT know the game's mechanics. Never invent requirements, places, prices or steps.
+  Reply generically like admins do ("уточните в разделе помощи / у игроков вашей организации", "мы не консультируем по
+  игровому процессу") unless the exact answer appears in SIMILAR PAST TICKETS.
 - Not a complaint at all (a question, thanks, chat spam, nothing against a player): complaint.invalid, short reply
   explaining it is not a violation / the form is wrong, needs_human=false.
+
+Account / payment tickets (hacked account, lost property, donation not received): never refuse and never blame the
+player; write a neutral hand-off in the player's language, e.g. "Приветствую, ваше обращение передано администрации,
+ожидайте ответа." needs_human=true.
 
 Hard rules:
 1. Cite ONLY rule ids listed under RULES, in the exact id form given. Never invent rule numbers. If you mention a rule
@@ -68,7 +77,8 @@ Hard rules:
 3. needs_human=true for: payments/donations, account hacking/lost access/lost property, ban appeals, complaints about
    admins, threats outside the game, any accusation complaint, or when unsure.
 4. needs_human=false only for: invalid/non-complaints, help/off-topic/ID reports, generic game-mechanics questions.
-5. Language: write the reply in REPLY LANGUAGE. Uzbek: same script as the player (Latin or Cyrillic). Kazakh: proper
+5. Language: write the WHOLE reply in REPLY LANGUAGE, including the closing word (Kazakh "Жабылды.", Uzbek "Yopildi.",
+   English "Closed."). Never mix Russian words into a Kazakh/Uzbek/English reply. Uzbek: same script as the player (Latin or Cyrillic). Kazakh: proper
    Kazakh letters. Ukrainian or unclear text -> Russian.
 6. Length: reports 1 sentence; complaints 2-4 sentences in the admin template style (greeting, result, decision,
    "Закрыто." or a polite closing). Plain text, no markdown, no emojis. Inside the text use «ёлочки» quotes, never double quotes.
@@ -89,13 +99,17 @@ def _short(s: str, n: int) -> str:
 
 
 def build_user_prompt(kind: str, messages: list[dict], meta: dict, rules: list[RulePoint], cases: list[Case],
-                      reply_lang: str) -> str:
+                      reply_lang: str, style_examples: list[Case] | None = None) -> str:
     conv = "\n".join(f"[{m['role']}] {_short(m['text'], 800)}" + (f" (attachments: {m.get('attachments')})" if m.get("attachments") else "")
                      for m in messages)
     rules_txt = "\n".join(f"- {r.cid} ({r.section_title}): {_short(r.text, 260)}" for r in rules) or "- (none)"
     cases_txt = "\n".join(
         f"#{i + 1} player: {_short(c.player, 200)}\n   admin: {_short(c.admin, 320)}" for i, c in enumerate(cases)
     ) or "(none)"
+    style_txt = ""
+    if style_examples:
+        style_txt = "\n\nSTYLE EXAMPLES — real admin replies in the reply language (copy tone and phrasing, not facts):\n" + \
+            "\n".join(f"- {_short(c.admin, 300)}" for c in style_examples)
     meta_txt = ", ".join(f"{k}={v}" for k, v in meta.items() if v not in (None, "", [])) or "-"
     return f"""{taxonomy_block(kind)}
 
@@ -103,7 +117,7 @@ RULES (the only ids you may cite):
 {rules_txt}
 
 SIMILAR PAST TICKETS with real admin replies (style and typical decisions; not facts about this case):
-{cases_txt}
+{cases_txt}{style_txt}
 
 TICKET kind={kind}; {meta_txt}
 {conv}
