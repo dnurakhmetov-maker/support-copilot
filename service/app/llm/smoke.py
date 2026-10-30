@@ -26,6 +26,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--sleep", type=float, default=0.0, help="pause between calls (free-tier rate limits)")
     ap.add_argument("--langs", default="", help="only these data langs, e.g. kk,uz,lat")
+    ap.add_argument("--silver", action="store_true", help="only tickets with silver category labels; prints accuracy")
     a = ap.parse_args()
 
     if a.file.endswith(".json"):
@@ -33,12 +34,19 @@ def main() -> None:
     else:
         rows = [json.loads(l) for l in open(a.file, encoding="utf-8")]
     random.Random(a.seed).shuffle(rows)
+    if a.silver:
+        from service.app.silver_labels import DATA, build
+        sp = DATA / "labels" / "silver_valid.jsonl"
+        if not sp.exists():
+            build()
+        ids = {json.loads(l)["ticket_id"] for l in open(sp, encoding="utf-8")}
+        rows = [r for r in rows if r["ticket_id"] in ids]
     if a.langs:
         keep = set(a.langs.split(","))
         rows = [r for r in rows if r.get("lang") in keep]
     non_ru = [r for r in rows if r.get("lang") not in ("ru",)]
     ru = [r for r in rows if r.get("lang") == "ru"]
-    sample = (non_ru[: a.n // 2] + ru)[: a.n] if not a.file.endswith(".json") else rows[: a.n]
+    sample = rows[: a.n] if (a.file.endswith(".json") or a.silver) else (non_ru[: a.n // 2] + ru)[: a.n]
 
     out_dir = Path(os.getenv("DATA_DIR", "data")) / "runs"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -85,6 +93,9 @@ def main() -> None:
     print("categories:", dict(cats.most_common()))
     if errors:
         print("errors:", dict(errors.most_common(5)))
+    if a.silver:
+        from service.app.silver_labels import score
+        score(str(out_path))
     print(f"\nfull results: {out_path}")
 
 
