@@ -99,7 +99,11 @@ def complete_json(system: str, user: str, max_tokens: int = 700, schema: dict | 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         body = {"systemInstruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": user}]}],
-                "generationConfig": gen_cfg}
+                "generationConfig": gen_cfg,
+                # Tickets ARE toxic by nature (insults, slurs, threats) — we moderate them, so the model must read them.
+                "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in (
+                    "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+                    "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")]}
         if schema and not _SCHEMA_DISABLED and os.getenv("LLM_JSON_SCHEMA", "1") == "1":
             gen_cfg["responseSchema"] = schema  # structured output: the model cannot return broken JSON
             try:
@@ -112,6 +116,9 @@ def complete_json(system: str, user: str, max_tokens: int = 700, schema: dict | 
                 data = _post(url, body, {"x-goog-api-key": key}, max(1.0, timeout - (time.time() - t0)))
         else:
             data = _post(url, body, {"x-goog-api-key": key}, timeout)
+        block = (data.get("promptFeedback") or {}).get("blockReason")
+        if block:
+            raise LLMError(f"blocked by provider safety filter: {block}")
         try:
             text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
         except (KeyError, IndexError) as e:

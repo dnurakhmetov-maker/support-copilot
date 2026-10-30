@@ -198,9 +198,13 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
             break
         except (LLMError, json.JSONDecodeError, ValueError) as e:
             meta.error = f"attempt {attempt + 1}: {str(e)[:280]}"
+            if "blocked by provider" in str(e) or "disabled" in str(e) or "not set" in str(e):
+                break  # retrying won't help
     if out is None:
         meta.latency_s = time.time() - t0
-        return _fallback(req, lang, "LLM недоступен — требуется администратор", nickname, has_evidence), meta
+        reason = ("модель отказалась обрабатывать текст (фильтр безопасности провайдера) — требуется администратор"
+                  if meta.error and "blocked" in meta.error else "LLM недоступен — требуется администратор")
+        return _fallback(req, lang, reason, nickname, has_evidence), meta
 
     # ---- post-processing: never trust the LLM blindly ----
     codes = {c["code"] for c in load_taxonomy()["categories"] if c["kind"] == req.kind}
