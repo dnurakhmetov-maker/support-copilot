@@ -34,14 +34,35 @@ PROPOSALS = LABELS / "gold_proposals.jsonl"
 PRIORITIES = ("p0", "p1", "p2", "p3")
 MAX_TEXT = 700
 
-SYSTEM = """You label support tickets of an online role-play game for a hand-checked test set.
-For every ticket choose exactly one category of its kind and one priority, strictly by the taxonomy given
-(titles, descriptions, examples, priority criteria). Judge by the meaning of the player's text only.
-- complaint.invalid only when the text is not a complaint at all by meaning (a question, thanks, chat spam,
-  nonsense). Short texts like "оск", "дм", "osk" with a nickname are normal complaints, not invalid.
-- Player claims are not facts, but the category is what the player complains about / asks for.
-- reason: one short phrase in English explaining the choice.
-Return JSON {"labels": [{"ticket_id", "category", "priority", "reason"}, ...]} with one item per input ticket."""
+# Team labeling guide (agreed with the Tech Lead) — shown to the LLM and to the human reviewer ('?').
+GUIDE = """Reports:
+- "помогите", "сос", "help", "yordam", "застрял", "переверните", "тп" -> report.help (even with no details)
+- player id/nick + "дм", "оск", "читер" (e.g. "345 дм") -> report.complaint
+- "как ...?", "где ...?", "сколько ...?" -> report.question
+- hacking, lost property, no access -> report.account (p0)
+- donation, payment, "не пришло" -> report.payment (p0)
+- report.offtopic ONLY for greetings, single symbols ("+", "."), nonsense, insults to admins
+Complaints:
+- "оск", "оск родни", swearing in chat -> complaint.insult
+- "дм", "убил без причины", "в ЗЗ" -> complaint.dm
+- "не согласен с наказанием", "админ дал бан ни за что", "прошу пересмотреть" -> complaint.admin
+- complaint.invalid ONLY if by meaning it is not a complaint: a question, thanks, "жб", a lone link with no words.
+  Short "оск"/"дм" is a normal complaint.
+Priorities:
+- p0 only hacking/access, payments, real-life threats
+- p1 cheats, scam, ads for real money, complaint about an admin
+- p2 insults, DM, RP violations, complaints sent as a report
+- p3 questions, help, offtopic, invalid"""
+
+SYSTEM = f"""You label support tickets of an online role-play game for a hand-checked test set.
+For every ticket choose exactly one category of its kind and one priority, by the taxonomy given and the team
+guide below. Judge by the meaning of the player's text only; player claims are not facts, but the category is
+what the player complains about / asks for.
+
+{GUIDE}
+
+reason: one short phrase in English explaining the choice.
+Return JSON {{"labels": [{{"ticket_id", "category", "priority", "reason"}}, ...]}} with one item per input ticket."""
 
 SCHEMA = {
     "type": "OBJECT",

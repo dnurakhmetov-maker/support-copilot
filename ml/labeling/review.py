@@ -21,7 +21,7 @@ import textwrap
 import time
 from pathlib import Path
 
-from ml.labeling.propose import PRIORITIES, PROPOSALS, read_jsonl, ticket_view
+from ml.labeling.propose import GUIDE, PRIORITIES, PROPOSALS, read_jsonl, ticket_view
 from service.app.llm.prompt import load_taxonomy
 
 DATA = Path(os.getenv("DATA_DIR", "data"))
@@ -40,6 +40,7 @@ def show_help(cats: list[dict], tax: dict) -> None:
     print()
     for p in tax["priorities"]:
         print(f"  {p['code']}  {p.get('title', '')}: {p.get('rule', '')}")
+    print("\nTEAM GUIDE (unsure for more than 10 s -> s):\n" + GUIDE)
 
 
 def parse(answer: str, cats: list[dict], cur_cat: str | None, cur_pri: str | None):
