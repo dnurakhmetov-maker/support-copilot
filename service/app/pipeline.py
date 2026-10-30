@@ -193,7 +193,8 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     shots = req.images_count if req.images_count is not None else sum(m.attachments for m in req.messages)
     meta_fields = {"accused_player_nick": nickname, "player_rule_field": req.rule_refs_raw, "server_lang": req.server_lang,
                    "region": req.region, "screenshots_attached": shots, "video_link_present": has_evidence}
-    user = build_user_prompt(req.kind, msgs, meta_fields, rules, cases[:4], lang)
+    style = load_cases().search(text or ".", kind=req.kind, k=2, admin_lang=lang) if lang in ("kk", "uz") else []
+    user = build_user_prompt(req.kind, msgs, meta_fields, rules, cases[:4], lang, style)
 
     out = None
     for attempt in range(2):  # one retry if the first call fails fast enough to fit the latency budget
@@ -233,7 +234,7 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     needs_human = bool(out.get("needs_human", True))
     draft_text = (out.get("draft_text") or "").strip()
     if draft_text and out_lang in _CLOSING:  # deterministic: no Russian closing word inside kk/uz/en replies
-        draft_text = re.sub(r"\b(Закрыто|Жалоба закрыта)[.!]?", _CLOSING[out_lang], draft_text)
+        draft_text = re.sub(r"\b(Закрыто|Жалоба закрыта|Yopiq|Жабық)[.!]?", _CLOSING[out_lang], draft_text)
     if draft_text:
         v = validate_draft(draft_text, [str(c) for c in out.get("cited") or []], rules_idx)
         meta.dropped_citations, meta.invalid_mentions = v.dropped_citations, v.invalid_mentions

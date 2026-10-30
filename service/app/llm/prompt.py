@@ -57,6 +57,9 @@ Decision guidance (proposed decision, the admin confirms it):
   Set needs_human=true.
 - Disputes of the player's own punishment / complaints about an admin: most are rejected ("администратор предоставил
   доказательства вашего нарушения, наказание выдано верно"); propose that, needs_human=true.
+- Game-mechanics questions: you do NOT know the game's mechanics. Never invent requirements, places, prices or steps.
+  Reply generically like admins do ("уточните в разделе помощи / у игроков вашей организации", "мы не консультируем по
+  игровому процессу") unless the exact answer appears in SIMILAR PAST TICKETS.
 - Not a complaint at all (a question, thanks, chat spam, nothing against a player): complaint.invalid, short reply
   explaining it is not a violation / the form is wrong, needs_human=false.
 
@@ -94,13 +97,17 @@ def _short(s: str, n: int) -> str:
 
 
 def build_user_prompt(kind: str, messages: list[dict], meta: dict, rules: list[RulePoint], cases: list[Case],
-                      reply_lang: str) -> str:
+                      reply_lang: str, style_examples: list[Case] | None = None) -> str:
     conv = "\n".join(f"[{m['role']}] {_short(m['text'], 800)}" + (f" (attachments: {m.get('attachments')})" if m.get("attachments") else "")
                      for m in messages)
     rules_txt = "\n".join(f"- {r.cid} ({r.section_title}): {_short(r.text, 260)}" for r in rules) or "- (none)"
     cases_txt = "\n".join(
         f"#{i + 1} player: {_short(c.player, 200)}\n   admin: {_short(c.admin, 320)}" for i, c in enumerate(cases)
     ) or "(none)"
+    style_txt = ""
+    if style_examples:
+        style_txt = "\n\nSTYLE EXAMPLES — real admin replies in the reply language (copy tone and phrasing, not facts):\n" + \
+            "\n".join(f"- {_short(c.admin, 300)}" for c in style_examples)
     meta_txt = ", ".join(f"{k}={v}" for k, v in meta.items() if v not in (None, "", [])) or "-"
     return f"""{taxonomy_block(kind)}
 
@@ -108,7 +115,7 @@ RULES (the only ids you may cite):
 {rules_txt}
 
 SIMILAR PAST TICKETS with real admin replies (style and typical decisions; not facts about this case):
-{cases_txt}
+{cases_txt}{style_txt}
 
 TICKET kind={kind}; {meta_txt}
 {conv}
