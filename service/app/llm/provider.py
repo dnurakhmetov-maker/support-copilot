@@ -67,12 +67,16 @@ def _post(url: str, body: dict, headers: dict, timeout: float) -> dict:
         raise LLMError(f"{type(e).__name__}: {e}") from e
 
 
-def complete_json(system: str, user: str, max_tokens: int = 700) -> LLMResult:
+_SCHEMA_DISABLED = False  # flips to True if the provider rejects structured output (then plain JSON mode is used)
+
+
+def complete_json(system: str, user: str, max_tokens: int = 700, schema: dict | None = None,
+                  timeout: float | None = None) -> LLMResult:
     """One call, JSON output. Raises LLMError on any failure (caller degrades to needs_human)."""
     provider = os.getenv("LLM_PROVIDER", "gemini")
     model = os.getenv("LLM_MODEL", "gemini-2.5-flash-lite")
     key = os.getenv("LLM_API_KEY", "")
-    timeout = float(os.getenv("LLM_TIMEOUT_S", "4.0"))
+    timeout = timeout or float(os.getenv("LLM_TIMEOUT_S", "4.0"))
     if provider == "none":
         raise LLMError("LLM disabled (LLM_PROVIDER=none)")
     if not key:
@@ -83,12 +87,23 @@ def complete_json(system: str, user: str, max_tokens: int = 700) -> LLMResult:
         gen_cfg: dict = {"temperature": 0.2, "maxOutputTokens": max_tokens, "responseMimeType": "application/json"}
         if os.getenv("LLM_THINKING_BUDGET", "0") != "":
             gen_cfg["thinkingConfig"] = {"thinkingBudget": int(os.getenv("LLM_THINKING_BUDGET", "0"))}
-        data = _post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            {"systemInstruction": {"parts": [{"text": system}]},
-             "contents": [{"role": "user", "parts": [{"text": user}]}],
-             "generationConfig": gen_cfg},
-            {"x-goog-api-key": key}, timeout)
+        global _SCHEMA_DISABLED
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        body = {"systemInstruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": user}]}],
+                "generationConfig": gen_cfg}
+        if schema and not _SCHEMA_DISABLED and os.getenv("LLM_JSON_SCHEMA", "1") == "1":
+            gen_cfg["responseSchema"] = schema  # structured output: the model cannot return broken JSON
+            try:
+                data = _post(url, body, {"x-goog-api-key": key}, timeout)
+            except LLMError as e:
+                if "HTTP 400" not in str(e):
+                    raise
+                _SCHEMA_DISABLED = True
+                gen_cfg.pop("responseSchema", None)
+                data = _post(url, body, {"x-goog-api-key": key}, max(1.0, timeout - (time.time() - t0)))
+        else:
+            data = _post(url, body, {"x-goog-api-key": key}, timeout)
         try:
             text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
         except (KeyError, IndexError) as e:

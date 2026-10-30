@@ -80,6 +80,28 @@ class TriageMeta:
     invalid_mentions: list[str] = field(default_factory=list)
 
 
+_STR = {"type": "STRING"}
+_STR_N = {"type": "STRING", "nullable": True}
+_ARR = {"type": "ARRAY", "items": {"type": "STRING"}}
+TRIAGE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "lang": {"type": "STRING", "enum": ["ru", "kk", "uz", "en", "und"]},
+        "category": _STR,
+        "priority": {"type": "STRING", "enum": ["p0", "p1", "p2", "p3"]},
+        "is_spam_or_duplicate": {"type": "BOOLEAN"},
+        "extracted": {"type": "OBJECT", "properties": {"nickname": _STR_N, "rule_refs": _ARR,
+                                                       "has_evidence": {"type": "BOOLEAN"}, "server": _STR_N}},
+        "draft_text": _STR, "cited": _ARR, "needs_human": {"type": "BOOLEAN"},
+        "confidence": {"type": "NUMBER"}, "reasons": _ARR,
+    },
+    "required": ["lang", "category", "priority", "is_spam_or_duplicate", "extracted", "draft_text", "cited",
+                 "needs_human", "confidence", "reasons"],
+    "propertyOrdering": ["lang", "category", "priority", "is_spam_or_duplicate", "extracted", "draft_text", "cited",
+                         "needs_human", "confidence", "reasons"],
+}
+LATENCY_BUDGET_S = 4.6  # p95 must stay under 5s
+
 _BAD_ESCAPE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
 
 
@@ -160,13 +182,23 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
                    "region": req.region, "screenshots_attached": shots, "video_link_present": has_evidence}
     user = build_user_prompt(req.kind, msgs, meta_fields, rules, cases[:4], lang)
 
-    try:
-        res = complete_json(SYSTEM, user)
-        meta.llm_latency_s, meta.tokens_in, meta.tokens_out, meta.cost_usd = res.latency_s, res.tokens_in, res.tokens_out, res.cost_usd
-        out = _parse_llm_json(res.text)
-        meta.llm_ok = True
-    except (LLMError, json.JSONDecodeError, ValueError) as e:
-        meta.error = str(e)[:300]
+    out = None
+    for attempt in range(2):  # one retry if the first call fails fast enough to fit the latency budget
+        left = LATENCY_BUDGET_S - (time.time() - t0)
+        if left < 1.2:
+            break
+        try:
+            res = complete_json(SYSTEM, user, schema=TRIAGE_SCHEMA, timeout=min(left, 4.0))
+            meta.llm_latency_s += res.latency_s
+            meta.tokens_in += res.tokens_in
+            meta.tokens_out += res.tokens_out
+            meta.cost_usd += res.cost_usd
+            out = _parse_llm_json(res.text)
+            meta.llm_ok, meta.error = True, None
+            break
+        except (LLMError, json.JSONDecodeError, ValueError) as e:
+            meta.error = f"attempt {attempt + 1}: {str(e)[:280]}"
+    if out is None:
         meta.latency_s = time.time() - t0
         return _fallback(req, lang, "LLM недоступен — требуется администратор", nickname, has_evidence), meta
 

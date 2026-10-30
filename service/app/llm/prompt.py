@@ -67,7 +67,7 @@ Hard rules:
 5. Language: write the reply in REPLY LANGUAGE. Uzbek: same script as the player (Latin or Cyrillic). Kazakh: proper
    Kazakh letters. Ukrainian or unclear text -> Russian.
 6. Length: reports 1 sentence; complaints 2-4 sentences in the admin template style (greeting, result, decision,
-   "Закрыто." or a polite closing). Plain text, no markdown, no emojis. Escape nothing: write plain Unicode characters.
+   "Закрыто." or a polite closing). Plain text, no markdown, no emojis. Inside the text use «ёлочки» quotes, never double quotes.
 7. is_spam_or_duplicate=true only for pure noise or insults to admins.
 
 Return ONLY a JSON object:
