@@ -35,8 +35,13 @@ Team of 4. Each person works with their own Claude. Read this file fully before 
 
 ## Domain facts worth knowing
 - Two ticket kinds: `complaint` (from launcher, against a player) and `report` (short in-game request).
-- Languages: mostly ru; uz (Cyrillic and Latin), kk, some en/pt. kz-server text uses cp1251 look-alikes:
-  ќ→қ, ґ→ғ, ѕ→ң, є→ә, ј→ө, ў→ұ, ї→ү.
+- Languages: mostly ru; uz (Cyrillic and Latin) matters more than kk in validation; some en/pt, Ukrainian.
+  kz-server text uses cp1251 look-alikes ќ→қ, ґ→ғ, ѕ→ң, є→ә, ј→ө, ў→ұ, ї→ү — **but most є/ї in the data are real
+  Ukrainian letters on cis servers.** Map only for kz region / server_lang kk or when other Kazakh markers are present.
+- Rule ids are not unique across sections. Canonical citation: bare `2.1` = general rules (ОП);
+  other sections prefixed, e.g. `GZ 1.2`, `ЖБ 1.2.6`. Player-entered `rule_refs_raw` is mostly noise.
+- Every complaint has screenshots (we don't get them); a video link (`<url>`) is the real evidence signal.
+- See `docs/EDA.md` for data findings.
 - Player claims are not facts. Drafts never promise unban, refund, or punishment of another player.
 - Payments, ban appeals, account hacking always → `needs_human: true`.
 - Cited rule ids must exist in `rules.json` — an invented rule zeroes the ticket in scoring.
