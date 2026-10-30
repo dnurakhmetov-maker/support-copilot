@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from contract.schemas import DraftReply, Extracted, TriageRequest, TriageResponse
 from service.app.llm.prompt import SYSTEM, build_user_prompt, load_taxonomy
 from service.app.llm.provider import LLMError, complete_json
+from service.app import classify as local_clf
 from service.app.rag.cases_index import load_cases
 from service.app.rag.rules_index import load_rules
 from service.app.validate import validate_draft
@@ -39,7 +40,7 @@ except Exception:  # TEMP fallback until Backend's normalize.py lands
             return text.translate(_LOOKALIKE)
         return text
 
-    def _detect_lang(text: str) -> str:
+    def _detect_lang(text: str, region: str | None = None, server_lang: str | None = None) -> str:
         low = text.lower()
         cyr = sum("а" <= ch <= "я" or ch in "ёәғқңөұүһіўҳїєґ" for ch in low)
         lat = sum("a" <= ch <= "z" for ch in low)
@@ -94,6 +95,9 @@ class TriageMeta:
     cost_usd: float = 0.0
     llm_ok: bool = False
     error: str | None = None
+    local_category: str | None = None
+    local_p: float = 0.0
+    llm_category: str | None = None
     dropped_citations: list[str] = field(default_factory=list)
     invalid_mentions: list[str] = field(default_factory=list)
 
@@ -164,6 +168,19 @@ PRIORITY_RANGE = {
 }
 
 
+LOCAL_TRUSTED = {"complaint.insult", "complaint.dm", "complaint.admin", "complaint.cheat"}
+LOCAL_THRESHOLD = 0.85
+
+
+def _local_category(req: TriageRequest, text: str) -> tuple[str | None, float]:
+    if req.kind != "complaint" or not text:
+        return None, 0.0
+    try:
+        return local_clf.predict(text)
+    except Exception:  # model missing / data missing: LLM only
+        return None, 0.0
+
+
 def _player_text(req: TriageRequest) -> str:
     return " ".join(m.text for m in req.messages if m.role == "player").strip()
 
@@ -201,7 +218,7 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     rules_idx = load_rules()
     raw_text = _player_text(req)
     text = _normalize(raw_text, req.region, req.server_lang) if raw_text else raw_text
-    lang = _detect_lang(text) if text else "und"
+    lang = _detect_lang(text, req.region, req.server_lang) if text else "und"
     if lang == "ru" and (req.region == "kz" or req.server_lang == "kk") and re.search(r"[әғқңөұүһі]", text.lower()) \
             and not re.search(r"[їєґ]", raw_text.lower()):
         lang = "kk"  # on Kazakh servers one Kazakh-only letter is enough
@@ -237,15 +254,27 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
             meta.error = f"attempt {attempt + 1}: {str(e)[:280]}"
             if "blocked by provider" in str(e) or "disabled" in str(e) or "not set" in str(e):
                 break  # retrying won't help
+    local_cat, local_p = _local_category(req, text)
+    meta.local_category, meta.local_p = local_cat, round(local_p, 3)
     if out is None:
         meta.latency_s = time.time() - t0
         reason = ("модель отказалась обрабатывать текст (фильтр безопасности провайдера) — требуется администратор"
                   if meta.error and "blocked" in meta.error else "LLM недоступен — требуется администратор")
-        return _fallback(req, lang, reason, nickname, has_evidence), meta
+        fb = _fallback(req, lang, reason, nickname, has_evidence)
+        if local_cat and local_p >= 0.5:
+            fb.category = local_cat
+            fb.priority = PRIORITY_RANGE.get(local_cat, ("p2",))[0]
+            fb.reasons.append(f"категория от локального классификатора ({local_p:.2f})")
+        return fb, meta
 
     # ---- post-processing: never trust the LLM blindly ----
     codes = {c["code"] for c in load_taxonomy()["categories"] if c["kind"] == req.kind}
     category = out.get("category") if out.get("category") in codes else f"{req.kind}.other" if f"{req.kind}.other" in codes else sorted(codes)[0]
+    llm_category = category
+    if (local_cat and local_cat in LOCAL_TRUSTED and local_p >= LOCAL_THRESHOLD and local_cat in codes
+            and category != "complaint.invalid" and category != local_cat):
+        category = local_cat  # trained on real admin outcomes; more accurate than the LLM on these classes
+    meta.llm_category = llm_category
     priority = out.get("priority") if out.get("priority") in PRIORITIES else "p2"
     out_lang = out.get("lang") if out.get("lang") in LANGS else lang
     ex = out.get("extracted") or {}
