@@ -127,6 +127,17 @@ def _parse_llm_json(text: str) -> dict:
 
 _CLOSING = {"kk": "Жабылды.", "uz": "Yopildi.", "en": "Closed."}
 
+# Fixed hand-off texts for categories that always go to a human: short, reviewed, no generation risk.
+HANDOFF = {
+    "ru": "Приветствую, ваше обращение передано администрации, ожидайте ответа.",
+    "kk": "Сәлеметсіз бе, өтінішіңіз әкімшілікке жіберілді, жауабын күтіңіз.",
+    "uz": "Assalomu alaykum, murojaatingiz ma'muriyatga yuborildi, iltimos, javobni kuting.",
+    "en": "Hello, your request has been forwarded to the administration, please wait for a reply.",
+}
+HANDOFF_CATEGORIES = {"report.account", "report.payment"}
+_PLACEHOLDER = re.compile(r"\s*(?:[#№]\s*)?<(?:digits|url|email|handle|nick)>(?:\s*(?:нөмірлі|-?raqamli|номер\w*))?", re.I)
+_CYR_NICK = re.compile(r"\b[А-ЯЁӘҒҚҢӨҰҮҺІ][а-яёәғқңөұүһі]+_[А-ЯЁӘҒҚҢӨҰҮҺІ][а-яёәғқңөұүһі]+\d*\b")
+
 # Complaint categories that are real accusations: the decision depends on evidence only admins see.
 AUTO_OK_COMPLAINT = {"complaint.invalid"}
 # Priority ceilings from taxonomy criteria (the LLM over-escalates); p0 is reserved for these categories.
@@ -233,6 +244,12 @@ def triage_with_meta(req: TriageRequest) -> tuple[TriageResponse, TriageMeta]:
     reasons = [str(r) for r in (out.get("reasons") or []) if re.search(r"[А-Яа-яЁё]", str(r))][:5]
     needs_human = bool(out.get("needs_human", True))
     draft_text = (out.get("draft_text") or "").strip()
+    if category in HANDOFF_CATEGORIES:
+        draft_text = HANDOFF.get(out_lang, HANDOFF["ru"])
+    if draft_text:
+        draft_text = _PLACEHOLDER.sub("", draft_text)
+        if nickname and nickname not in draft_text:  # the model sometimes transliterates Latin nicks
+            draft_text = _CYR_NICK.sub(nickname, draft_text)
     if draft_text and out_lang in _CLOSING:  # deterministic: no Russian closing word inside kk/uz/en replies
         draft_text = re.sub(r"\b(Закрыто|Жалоба закрыта|Yopiq|Жабық)[.!]?", _CLOSING[out_lang], draft_text)
     if draft_text:

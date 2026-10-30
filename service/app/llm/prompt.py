@@ -39,6 +39,8 @@ Facts about the data:
   you don't. Short texts like "оск", "оск родни", "дм", "osk" are NORMAL complaints, not invalid ones.
   NEVER claim that evidence is missing because the text is short. Ask for video only when the similar cases show
   admins asking for video in that situation (e.g. cheats, DM disputes, deception).
+- Copy player nicknames EXACTLY as given (Latin letters, underscore, digits) — never transliterate or translate them.
+  Never copy anonymization tokens like <digits>, <url> from examples into the reply.
 - The reporter's name is unknown. accused_player_nick is the ACCUSED player — never address the reply to that nick.
   Address the player as "уважаемый игрок" (or equivalent) or without a name.
 - A video link (<url>, video_link_present=true) is the strongest evidence admins get: complaints with a video usually
